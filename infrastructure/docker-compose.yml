@@ -1,0 +1,17 @@
+version: '2.4'
+
+services:
+    python:
+        image: solis-inverter-manager:dev
+        container_name: solis-inverter-manager
+        build:
+            target: dev
+            context: .
+            dockerfile: ./Dockerfile
+        environment:
+            - INVERTER_SERIAL=${INVERTER_SERIAL}
+            - INVERTER_IP=${INVERTER_IP}
+        volumes:
+            - './:/app:cached'
+            # Dont share these into the container
+            - '/app/venv'

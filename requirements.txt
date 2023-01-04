@@ -1,0 +1,3 @@
+environs==9.5.0
+pysolarmanv5==2.4.0
+uModbus==1.0.4
