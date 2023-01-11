@@ -1,7 +1,10 @@
-from pysolarmanv5.pysolarmanv5 import PySolarmanV5, NoSocketAvailableError
+from pysolarmanv5.pysolarmanv5 import PySolarmanV5, NoSocketAvailableError, V5FrameError
 
 __BATTERY_REGISTER__ = 33126
+__OPTIMAL_INCOME_REGISTER__ = 43110
 
+__OPTIMAL_INCOME_STOP_REGISTER_VALUE__ = 33
+__OPTIMAL_INCOME_RUN_REGISTER_VALUE__ = 35
 
 class Inverter:
     _ip: str
@@ -29,6 +32,24 @@ class Inverter:
             "charging": (True, False)[register[9]]
         }
 
+    def turn_on_time_of_use(self):
+        if not self._connected:
+            self.connect()
+
+        self._solarman.write_holding_register(
+            register_addr=__OPTIMAL_INCOME_REGISTER__,
+            value=__OPTIMAL_INCOME_RUN_REGISTER_VALUE__
+        )
+
+    def turn_off_time_of_use(self):
+        if not self._connected:
+            self.connect()
+
+        self._solarman.write_holding_register(
+            register_addr=__OPTIMAL_INCOME_REGISTER__,
+            value=__OPTIMAL_INCOME_STOP_REGISTER_VALUE__
+        )
+
     def connect(self):
         if self._connected:
             return
@@ -38,6 +59,13 @@ class Inverter:
                                           verbose=False, socket_timeout=10)
 
             self._connected = True
-        except NoSocketAvailableError as e:
+        except V5FrameError as e:
             # todo re-raise this as a local exception
+            raise e
+
+    def __read_register(self, register: int, quantity: int):
+        try:
+            register = self._solarman.read_input_registers(register_addr=register, quantity=quantity)
+
+        except V5FrameError as e:
             raise e

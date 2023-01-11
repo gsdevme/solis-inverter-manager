@@ -12,7 +12,15 @@ COPY .env main.py requirements.txt /app
 RUN pip install --upgrade pip && \
     apk add make
 
-from base as dev
+from base as build
+
+RUN pip3 install pylint
+
+from build as dev
+
+CMD ["tail", "-f", "/dev/null"]
+
+from build as dev
 
 CMD ["tail", "-f", "/dev/null"]
 

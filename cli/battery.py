@@ -1,4 +1,3 @@
-import typer
 from environs import Env
 from solis.inverter import Inverter
 from rich import print
