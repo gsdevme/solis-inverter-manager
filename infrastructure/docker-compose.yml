@@ -15,3 +15,5 @@ services:
             - './:/app:cached'
             # Dont share these into the container
             - '/app/venv'
+        ports:
+            - 8000:8000
