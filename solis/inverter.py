@@ -55,9 +55,11 @@ class Inverter:
         return {
             "pv_watts_now": int(dc[9]) + int(dc[8]),
             "pv_yield_today": int(system[SYSTEM_REGISTER_PV_TODAY]) / 10,
-            "pv_yield_this_month": int(system[SYSTEM_REGISTER_PV_THIS_MONTH_1]) + int(system[SYSTEM_REGISTER_PV_THIS_MONTH_2]),
+            "pv_yield_this_month": int(system[SYSTEM_REGISTER_PV_THIS_MONTH_1]) + int(
+                system[SYSTEM_REGISTER_PV_THIS_MONTH_2]),
             "pv_yield_yesterday": int(system[SYSTEM_REGISTER_PV_YESTERDAY]) / 10,
-            "pv_yield_last_month": int(system[SYSTEM_REGISTER_PV_LAST_MONTH_1]) + int(system[SYSTEM_REGISTER_PV_LAST_MONTH_2]),
+            "pv_yield_last_month": int(system[SYSTEM_REGISTER_PV_LAST_MONTH_1]) + int(
+                system[SYSTEM_REGISTER_PV_LAST_MONTH_2]),
         }
 
     def read_grid_charge(self):
@@ -76,15 +78,22 @@ class Inverter:
 
     def read_battery(self):
         battery = self.__modbus.read_input_registers(BATTERY_REGISTER[0], BATTERY_REGISTER[1])
+        charging = (True, False)[battery[BATTERY_REGISTER_STATE]]
+        power_watts = int(battery[BATTERY_REGISTER_BATTERY_POWER_1]) + int(battery[BATTERY_REGISTER_BATTERY_POWER_2])
+        power_amps = int(battery[BATTERY_REGISTER_BATTERY_POWER_AMPS])
+
+        if charging:
+            power_watts = -abs(power_watts)
+            power_amps = -abs(power_amps)
 
         return {
             "percentage": battery[BATTERY_REGISTER_CHARGE_PERCENTAGE],
             "health": battery[BATTERY_REGISTER_HEALTH],
             "voltage": int(battery[BATTERY_REGISTER_VOLTAGE]) / 10,
             "bms_voltage": int(battery[BATTERY_REGISTER_BMS_VOLTAGE]) / 100,
-            "battery_power_in_watts": int(battery[BATTERY_REGISTER_BATTERY_POWER_1]) + int(battery[BATTERY_REGISTER_BATTERY_POWER_2]),
-            "battery_power_in_amps": int(battery[BATTERY_REGISTER_BATTERY_POWER_AMPS]) / 10,
-            "charging": (True, False)[battery[BATTERY_REGISTER_STATE]],
+            "battery_power_in_watts": power_watts,
+            "battery_power_in_amps": power_amps / 10,
+            "charging": charging,
         }
 
     # def turn_on_time_of_use(self):
