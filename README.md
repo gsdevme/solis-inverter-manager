@@ -4,27 +4,48 @@
 
 ```json
 {
-  "battery": {
-    "percentage": 89,
-    "health": 100,
-    "voltage": 51.2,
-    "bms_voltage": 50.51,
-    "battery_power_in_watts": 742,
-    "battery_power_in_amps": 14.5,
-    "charging": true
+  "meter": {
+    "battery": {
+      "percentage": 98,
+      "health": 100,
+      "voltage": 50.1,
+      "bms_voltage": 49.7,
+      "battery_power": 235,
+      "power_from_the_battery": 235,
+      "power_to_the_battery": 0,
+      "battery_power_amps": 4.7,
+      "charging": false
+    },
+    "grid_export": 0,
+    "grid_return": 0,
+    "grid_import": 0
   },
   "grid_charge": {
-    "grid_charging_amps": 45.0,
+    "grid_charging": 45.0,
     "grid_charge_start": "2023-03-11T00:29:00",
     "grid_charge_end": "2023-03-11T04:31:00",
     "grid_discharging_amps": 0.0
   },
   "pv": {
-    "pv_watts_now": 1275,
-    "pv_yield_today": 2.2,
-    "pv_yield_this_month": 117,
+    "pv_now": 117,
+    "panels": {
+      "voltage": {
+        "pv1": 195.5,
+        "pv2": 195.1
+      },
+      "current": {
+        "pv1": 0.3,
+        "pv2": 0.3
+      }
+    },
+    "pv_yield_today": 9.8,
+    "pv_yield_this_month": 125,
     "pv_yield_yesterday": 23.7,
     "pv_yield_last_month": 163
+  },
+  "summary": {
+    "pv_self_consumption": 117,
+    "inverter_generation": 352
   }
 }
 ```
