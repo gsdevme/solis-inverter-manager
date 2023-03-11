@@ -1,14 +1,14 @@
 import typer
 from environs import Env
 
-from cli.battery import read_battery
+from cli.meter import read_meter
 from cli.serve import serve
 from cli.set_charge import set_charge
 from solis.modbus import Modbus
 
 env = Env()
 app = typer.Typer()
-app.command()(read_battery)
+app.command()(read_meter)
 app.command()(set_charge)
 app.command()(serve)
 
