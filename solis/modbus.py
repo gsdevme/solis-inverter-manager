@@ -68,7 +68,7 @@ class Modbus:
             self.__solarman = PySolarmanV5(address=self.__ip, serial=self.__serial, port=self.__port, mb_slave_id=1,
                                            verbose=False, socket_timeout=10)
 
-            self._has_connected = True
+            self.__has_connected = True
         except NoSocketAvailableError as e:
             if not self.__has_connected:
                 raise e
