@@ -83,8 +83,8 @@ class Inverter:
         grid_charge = self.__modbus.read_holding_registers(GRID_CHARGE[0], GRID_CHARGE[1])
 
         now = date.datetime.now()
-        charge_end = date.datetime(now.year, now.month, now.day, int(grid_charge[4]), int(grid_charge[3]))
-        charge_start = date.datetime(now.year, now.month, now.day, int(grid_charge[6]), int(grid_charge[5]))
+        charge_end = date.datetime(now.year, now.month, now.day, int(grid_charge[4]), int(grid_charge[5]))
+        charge_start = date.datetime(now.year, now.month, now.day, int(grid_charge[6]), int(grid_charge[3]))
 
         return {
             "grid_charging": int(grid_charge[0]) / 10,
