@@ -74,4 +74,5 @@ class Modbus:
                 raise e
 
     def disconnect(self):
+        self.__solarman.sock.close()
         self.__has_connected = False
