@@ -4,12 +4,14 @@ from environs import Env
 from cli.meter import read_meter
 from cli.serve import serve
 from cli.set_charge import set_charge
+from cli.publish import publish_mqtt
 from solis.modbus import Modbus
 
 env = Env()
 app = typer.Typer()
 app.command()(read_meter)
 app.command()(set_charge)
+app.command()(publish_mqtt)
 app.command()(serve)
 
 if __name__ == '__main__':
