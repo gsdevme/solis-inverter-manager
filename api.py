@@ -11,16 +11,3 @@ env.read_env()
 def read_api_metrics():
     return Inverter(Modbus()).poll()
 
-
-@app.get("/api/battery")
-def read_api_battery():
-    battery = Inverter(Modbus()).read_battery()
-
-    return {"battery": battery}
-
-
-@app.get("/api/pv")
-def read_api_battery():
-    pv = Inverter(Modbus()).read_pv_yield()
-
-    return {"pv": pv}
