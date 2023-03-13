@@ -45,21 +45,32 @@ class Inverter:
         meter = self.read_meter()
         pv = self.read_pv_yield()
 
+        to_battery = int(meter['battery']['power_to_the_battery'])
+
+        if to_battery <= 0:
+            to_battery = abs(to_battery)
+        else:
+            to_battery = 0
+
         return {
             "meter": meter,
             "grid_charge": self.read_grid_charge(),
             "pv": pv,
             "summary": {
-                "pv_self_consumption": pv['pv_now'] - (meter['grid_export'] + meter['battery']['power_to_the_battery']),
-                "inverter_generation": (pv['pv_now'] + meter['battery']['power_from_the_battery']) - meter['grid_export'],
+                "pv_self_consumption": pv['pv_now'] - (meter['grid_export'] + to_battery),
+                "inverter_generation": pv['pv_now'] - meter['grid_export'],
             },
         }
 
     def read_pv_yield(self):
         system = self.__modbus.read_input_registers(SYSTEM_REGISTER[0], SYSTEM_REGISTER[1])
+
+        datetime = date.datetime(2000 + int(system[0]), int(system[1]), int(system[2]), int(system[3]), int(system[4]),
+                                 int(system[5]))
         dc = self.__modbus.read_input_registers(DC_INPUT[0], DC_INPUT[1])
 
         return {
+            "datetime": datetime,
             "pv_now": int(dc[9]) + int(dc[8]),
             "panels": {
                 "voltage": {

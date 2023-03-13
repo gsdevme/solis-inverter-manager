@@ -25,6 +25,7 @@ class Modbus:
         self.__serial = serial
 
     @retry(V5FrameError, tries=3, delay=10)
+    @retry(TimeoutError, tries=3, delay=10)
     @retry(struct.error, tries=3, delay=10)
     def read_input_registers(self, addr: int, quantity: int):
         self.connect_if_required()
@@ -37,6 +38,7 @@ class Modbus:
             raise e
 
     @retry(V5FrameError, tries=3, delay=10)
+    @retry(TimeoutError, tries=3, delay=10)
     @retry(struct.error, tries=3, delay=10)
     def read_holding_registers(self, addr: int, quantity: int):
         self.connect_if_required()
@@ -49,6 +51,7 @@ class Modbus:
             raise e
 
     @retry(V5FrameError, tries=3, delay=10)
+    @retry(TimeoutError, tries=3, delay=10)
     @retry(struct.error, tries=3, delay=10)
     def write_holding_register(self, addr: int, quantity: int):
         self.connect_if_required()
