@@ -87,7 +87,7 @@ class Inverter:
         charge_start = date.datetime(now.year, now.month, now.day, int(grid_charge[6]), int(grid_charge[3]))
 
         return {
-            "grid_charging": int(grid_charge[0]) / 10,
+            "grid_charging_amps": int(grid_charge[0]) / 10,
             "grid_charge_start": charge_start.isoformat(),
             "grid_charge_end": charge_end.isoformat(),
             "grid_discharging_amps": int(grid_charge[1]) / 10,
