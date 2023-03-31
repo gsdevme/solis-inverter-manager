@@ -28,4 +28,5 @@ jobs:
         uses: docker/build-push-action@v3
         with:
           platforms: linux/amd64, linux/arm64
+          push: true
           tags: gsdevme/solis-inverter-manager:${{ steps.git.outputs.tag }}, gsdevme/solis-inverter-manager:latest
