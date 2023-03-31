@@ -11,6 +11,7 @@ services:
         environment:
             - INVERTER_SERIAL=${INVERTER_SERIAL}
             - INVERTER_IP=${INVERTER_IP}
+            - MQTT_HOST=${MQTT_HOST}
         volumes:
             - './:/app:cached'
             # Dont share these into the container
