@@ -1,0 +1,18 @@
+name: build
+on:
+  push:
+    branches:
+      - master
+env:
+  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v1
+        with:
+          fetch-depth: 0
+          ssh-key: ${{ secrets.SSH_KEY }}
+      - name: Create Git Semver Tag
+        if: github.ref == 'refs/heads/master'
+        run: npx semantic-release --branches master -p @semantic-release/commit-analyzer -p @semantic-release/release-notes-generator -p @semantic-release/github
