@@ -7,25 +7,22 @@ ENV PYTHON_IN_CONTAINER=1
 RUN mkdir /app
 WORKDIR /app
 
-COPY .env main.py requirements.txt /app
+COPY . .
 
 RUN pip install --upgrade pip && \
     apk add make
 
-from base as build
+FROM base as build
 
 RUN pip3 install pylint
 
-from build as dev
+FROM build as dev
 
 CMD ["tail", "-f", "/dev/null"]
 
-from build as dev
-
-CMD ["tail", "-f", "/dev/null"]
-
-from base as prod
+FROM base as prod
 
 RUN pip3 install -r requirements.txt
 
-#CMD [ "python", "./main.py" ]
+ENTRYPOINT [ "python", "./main.py" ]
+CMD [ "publish-mqtt" ]
