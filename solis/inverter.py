@@ -111,11 +111,12 @@ class Inverter:
         power_amps = int(meter[METER_REGISTER_BATTERY_POWER_AMPS])
 
         if charging:
+            to_battery = power_watts
+
             power_watts = -abs(power_watts)
             power_amps = -abs(power_amps)
 
             from_battery = 0
-            to_battery = power_watts
         else:
             from_battery = power_watts
             to_battery = 0
