@@ -168,4 +168,4 @@ class Inverter:
         """
         :type amps float
         """
-        self.__modbus.write_holding_register(GRID_CHARGE[0], int(amps * 10))
+        self.__modbus.write_holding_register(GRID_CHARGE[0], int(round(amps, 1) * 10))
