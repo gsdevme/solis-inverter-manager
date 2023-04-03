@@ -1,5 +1,7 @@
 import time
 import logging
+
+import manager.callbacks
 from solis.inverter import Inverter
 from solis.modbus import Modbus
 from environs import Env
@@ -16,6 +18,14 @@ def publish_mqtt():
     prefix_id = f"solis_inverter_{serial}"
 
     mqtt_settings = Settings.MQTT(host=env.str("MQTT_HOST"))
+    client = Client("solar-inverter-manager")
+    client.on_connect = manager.callbacks.on_connect
+    client.on_message = manager.callbacks.on_message
+
+    client.connect(host=env.str("MQTT_HOST"))
+
+    client.loop_start()
+
 
     device = DeviceInfo(
         name=prefix_name,
@@ -30,22 +40,22 @@ def publish_mqtt():
                                               unique_id=f"{prefix_id}_running",
                                               device=device)))
     from_battery = Sensor(Settings(mqtt=mqtt_settings,
-                              entity=SensorInfo(
-                                  name=f"{prefix_name} Power From Battery",
-                                  device_class="power",
-                                  unit_of_measurement="W",
-                                  expire_after=240,
-                                  unique_id=f"{prefix_id}_power_from_battery",
-                                  device=device)))
+                                   entity=SensorInfo(
+                                       name=f"{prefix_name} Power From Battery",
+                                       device_class="power",
+                                       unit_of_measurement="W",
+                                       expire_after=240,
+                                       unique_id=f"{prefix_id}_power_from_battery",
+                                       device=device)))
 
     to_battery = Sensor(Settings(mqtt=mqtt_settings,
-                              entity=SensorInfo(
-                                  name=f"{prefix_name} Power To Battery",
-                                  device_class="power",
-                                  unit_of_measurement="W",
-                                  expire_after=240,
-                                  unique_id=f"{prefix_id}_power_to_battery",
-                                  device=device)))
+                                 entity=SensorInfo(
+                                     name=f"{prefix_name} Power To Battery",
+                                     device_class="power",
+                                     unit_of_measurement="W",
+                                     expire_after=240,
+                                     unique_id=f"{prefix_id}_power_to_battery",
+                                     device=device)))
 
     battery = Sensor(Settings(mqtt=mqtt_settings,
                               entity=SensorInfo(
@@ -57,23 +67,24 @@ def publish_mqtt():
                                   device=device)))
 
     grid_charge_amps = Sensor(Settings(mqtt=mqtt_settings,
-                              entity=SensorInfo(
-                                  name=f"{prefix_name} Charge Amps",
-                                  device_class="current",
-                                  unit_of_measurement="A",
-                                  expire_after=240,
-                                  unique_id=f"{prefix_id}_charge_amps",
-                                  device=device)))
+                                       entity=SensorInfo(
+                                           name=f"{prefix_name} Charge Amps",
+                                           device_class="current",
+                                           unit_of_measurement="A",
+                                           expire_after=240,
+                                           unique_id=f"{prefix_id}_charge_amps",
+                                           device=device)))
 
     pv = Sensor(Settings(mqtt=mqtt_settings,
-                              entity=SensorInfo(
-                                  name=f"{prefix_name} PV",
-                                  device_class="power",
-                                  unit_of_measurement="W",
-                                  expire_after=240,
-                                  unique_id=f"{prefix_id}_pv",
-                                  device=device)))
+                         entity=SensorInfo(
+                             name=f"{prefix_name} PV",
+                             device_class="power",
+                             unit_of_measurement="W",
+                             expire_after=240,
+                             unique_id=f"{prefix_id}_pv",
+                             device=device)))
 
+    logger = logging.getLogger("poller")
 
     while True:
         poller_sensor.on()
@@ -81,7 +92,7 @@ def publish_mqtt():
         try:
             metrics = Inverter(Modbus()).poll()
         except Exception as e:
-            logging.error("Error communicating with modbus: " + str(e))
+            logger.error("Error communicating with modbus: " + str(e))
 
             time.sleep(60)
 
@@ -108,5 +119,6 @@ def publish_mqtt():
             "pv_yield_last_month": metrics["pv"]['pv_yield_last_month'],
         })
 
-        print("Published")
+        logger.info("Published")
+
         time.sleep(60)

@@ -1,4 +1,5 @@
 import typer
+import logging
 from environs import Env
 
 from cli.meter import read_meter
@@ -16,6 +17,8 @@ app.command()(serve)
 
 if __name__ == '__main__':
     env.read_env()
+
+    logging.basicConfig(level="INFO")
 
     Modbus().set_connection_settings(
         env.str("INVERTER_IP"),
