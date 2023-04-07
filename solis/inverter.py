@@ -92,12 +92,14 @@ class Inverter:
 
     def read_grid_charge(self):
         grid_charge = self.__modbus.read_holding_registers(GRID_CHARGE[0], GRID_CHARGE[1])
+        optimal_income = self.__modbus.read_holding_registers(OPTIMAL_INCOME_REGISTER, 1)
 
         now = date.datetime.now()
         charge_end = date.datetime(now.year, now.month, now.day, int(grid_charge[4]), int(grid_charge[5]))
         charge_start = date.datetime(now.year, now.month, now.day, int(grid_charge[6]), int(grid_charge[3]))
 
         return {
+            "grid_charge_optimal_income": optimal_income[0] == OPTIMAL_INCOME_RUN_REGISTER_VALUE,
             "grid_charging_amps": int(grid_charge[0]) / 10,
             "grid_charge_start": charge_start.isoformat(),
             "grid_charge_end": charge_end.isoformat(),
@@ -134,6 +136,7 @@ class Inverter:
             "battery": {
                 "percentage": meter[METER_REGISTER_CHARGE_PERCENTAGE],
                 "health": meter[METER_REGISTER_HEALTH],
+                "energy_storage_mode": meter[6],
                 "voltage": int(meter[METER_REGISTER_VOLTAGE]) / 10,
                 "bms_voltage": int(meter[METER_REGISTER_BMS_VOLTAGE]) / 100,
                 "battery_power": power_watts,
