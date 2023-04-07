@@ -150,22 +150,17 @@ class Inverter:
             "grid_import": grid_import,
         }
 
-    # def turn_on_time_of_use(self):
-    #     self.connect_if_required()
-    #
-    #     self._solarman.write_holding_register(
-    #         register_addr=OPTIMAL_INCOME_REGISTER,
-    #         value=OPTIMAL_INCOME_RUN_REGISTER_VALUE
-    #     )
-    #
-    # def turn_off_time_of_use(self):
-    #     self.connect_if_required()
-    #
-    #     self._solarman.write_holding_register(
-    #         register_addr=OPTIMAL_INCOME_REGISTER,
-    #         value=OPTIMAL_INCOME_STOP_REGISTER_VALUE
-    #     )
-    #
+    def turn_on_optimal_income(self):
+        self.__modbus.write_holding_register(
+            OPTIMAL_INCOME_REGISTER,
+            OPTIMAL_INCOME_RUN_REGISTER_VALUE
+        )
+
+    def turn_off_optimal_income(self):
+        self.__modbus.write_holding_register(
+            OPTIMAL_INCOME_REGISTER,
+            OPTIMAL_INCOME_STOP_REGISTER_VALUE
+        )
 
     def set_grid_charging_amps(self, amps):
         """
