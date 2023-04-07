@@ -19,19 +19,19 @@ def set_charge(payload):
 
 
 def set_optimal_income(payload):
-    print(payload)
     try:
-        enable = bool(payload)
+        enable = payload == "1" or payload == "true"
     except ValueError:
         return
 
-    logging.getLogger("manager").info("setting optimal income to " + str(enable))
-
     if enable:
+        logging.getLogger("manager").info("enabling optimal income")
+
         Inverter(Modbus()).turn_on_optimal_income()
     else:
-        Inverter(Modbus()).turn_off_optimal_income()
+        logging.getLogger("manager").info("disabling optimal income")
 
+        Inverter(Modbus()).turn_off_optimal_income()
 
 def on_connect(client, userdata, flags, rc):
     client.subscribe(topics.set_charge_topic)
