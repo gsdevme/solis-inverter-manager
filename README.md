@@ -1,5 +1,18 @@
 # Solis Inverter Manager
 
+<img width="510" alt="Screenshot 2023-04-09 at 20 21 31" src="https://user-images.githubusercontent.com/319498/230792453-fc59532c-34b2-4f45-b341-40e12b425764.png">
+<img width="499" alt="Screenshot 2023-04-09 at 20 21 25" src="https://user-images.githubusercontent.com/319498/230792454-825c0761-5ec5-4405-a7a3-a9d1a2e693e3.png">
+
+```yaml
+action:
+  - service: mqtt.publish
+    data:
+      qos: 0
+      topic: solar_inverter_manager/set_charge
+      payload_template: "25"
+```
+
+
 # Metrics endpoint
 
 ```json
