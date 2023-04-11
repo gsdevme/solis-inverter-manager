@@ -9,6 +9,7 @@ from ha_mqtt_discoverable import Settings, DeviceInfo
 from ha_mqtt_discoverable.sensors import BinarySensor, BinarySensorInfo, Sensor, SensorInfo, Subscriber
 from paho.mqtt.client import Client, MQTTMessage
 
+
 def publish_mqtt():
     env = Env()
 
@@ -26,7 +27,6 @@ def publish_mqtt():
 
     client.loop_start()
 
-
     device = DeviceInfo(
         name=prefix_name,
         identifiers=prefix_id,
@@ -39,6 +39,7 @@ def publish_mqtt():
                                               expire_after=240,
                                               unique_id=f"{prefix_id}_running",
                                               device=device)))
+
     from_battery = Sensor(Settings(mqtt=mqtt_settings,
                                    entity=SensorInfo(
                                        name=f"{prefix_name} Power From Battery",
@@ -75,6 +76,13 @@ def publish_mqtt():
                                            unique_id=f"{prefix_id}_charge_amps",
                                            device=device)))
 
+    optimal_income = BinarySensor(Settings(mqtt=mqtt_settings,
+                                           entity=BinarySensorInfo(
+                                               name=f"{prefix_name} optimal_income",
+                                               expire_after=240,
+                                               unique_id=f"{prefix_id}_optimal_income",
+                                               device=device)))
+
     pv = Sensor(Settings(mqtt=mqtt_settings,
                          entity=SensorInfo(
                              name=f"{prefix_name} PV",
@@ -110,6 +118,11 @@ def publish_mqtt():
 
         grid_charge_amps.set_state(metrics["grid_charge"]["grid_charging_amps"])
         grid_charge_amps.set_attributes(metrics["grid_charge"])
+
+        if metrics['grid_charge']['grid_charge_optimal_income']:
+            optimal_income.on()
+        else:
+            optimal_income.off()
 
         pv.set_state(metrics["pv"]["pv_now"])
         pv.set_attributes({
