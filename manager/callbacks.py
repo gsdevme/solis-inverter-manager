@@ -17,6 +17,19 @@ def set_charge(payload):
 
     Inverter(Modbus()).set_grid_charging_amps(amps)
 
+def set_discharge(payload):
+    try:
+        amps = float(payload)
+    except ValueError:
+        return
+
+    if amps > 60 or amps < 0:
+        return
+
+    logging.getLogger("manager").info("setting discharge amps to " + str(amps))
+
+    Inverter(Modbus()).set_grid_discharging_amps(amps)
+
 
 def set_optimal_income(payload):
     try:
@@ -35,6 +48,7 @@ def set_optimal_income(payload):
 
 def on_connect(client, userdata, flags, rc):
     client.subscribe(topics.set_charge_topic)
+    client.subscribe(topics.set_discharge_topic)
     client.subscribe(topics.set_optimal_income_topic)
 
 
@@ -44,5 +58,7 @@ def on_message(client, userdata, message):
     match message.topic:
         case topics.set_charge_topic:
             set_charge(payload)
+        case topics.set_discharge_topic:
+            set_discharge(payload)
         case topics.set_optimal_income_topic:
             set_optimal_income(payload)
