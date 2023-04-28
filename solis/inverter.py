@@ -5,6 +5,7 @@ import datetime as date
 METER_REGISTER = [33126, 25]
 OPTIMAL_INCOME_REGISTER = 43110
 GRID_CHARGE = [43141, 10]
+DISCHARGE_GRID_CHARGE = 43142
 SYSTEM_REGISTER = [33022, 19]
 DC_INPUT = [33049, 10]
 
@@ -172,3 +173,9 @@ class Inverter:
         :type amps float
         """
         self.__modbus.write_holding_register(GRID_CHARGE[0], int(round(amps, 1) * 10))
+
+    def set_grid_discharging_amps(self, amps):
+        """
+        :type amps float
+        """
+        self.__modbus.write_holding_register(DISCHARGE_GRID_CHARGE, int(round(amps, 1) * 10))
