@@ -96,14 +96,19 @@ class Inverter:
 
         now = date.datetime.now()
         charge_end = date.datetime(now.year, now.month, now.day, int(grid_charge[4]), int(grid_charge[5]))
-        charge_start = date.datetime(now.year, now.month, now.day, int(grid_charge[6]), int(grid_charge[3]))
+        charge_start = date.datetime(now.year, now.month, now.day, int(grid_charge[2]), int(grid_charge[3]))
+
+        discharge_end = date.datetime(now.year, now.month, now.day, int(grid_charge[8]), int(grid_charge[9]))
+        discharge_start = date.datetime(now.year, now.month, now.day, int(grid_charge[6]), int(grid_charge[7]))
 
         return {
             "grid_charge_optimal_income": optimal_income[0] == OPTIMAL_INCOME_RUN_REGISTER_VALUE,
             "grid_charging_amps": int(grid_charge[0]) / 10,
+            "grid_discharging_amps": int(grid_charge[1]) / 10,
             "grid_charge_start": charge_start.isoformat(),
             "grid_charge_end": charge_end.isoformat(),
-            "grid_discharging_amps": int(grid_charge[1]) / 10,
+            "grid_discharge_start": discharge_start.isoformat(),
+            "grid_discharge_end": discharge_end.isoformat(),
         }
 
     def read_meter(self):

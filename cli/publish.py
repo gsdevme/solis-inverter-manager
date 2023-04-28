@@ -76,6 +76,15 @@ def publish_mqtt():
                                            unique_id=f"{prefix_id}_charge_amps",
                                            device=device)))
 
+    grid_discharge_amps = Sensor(Settings(mqtt=mqtt_settings,
+                                       entity=SensorInfo(
+                                           name=f"{prefix_name} Discharge Amps",
+                                           device_class="current",
+                                           unit_of_measurement="A",
+                                           expire_after=240,
+                                           unique_id=f"{prefix_id}_discharge_amps",
+                                           device=device)))
+
     optimal_income = BinarySensor(Settings(mqtt=mqtt_settings,
                                            entity=BinarySensorInfo(
                                                name=f"{prefix_name} optimal_income",
@@ -117,6 +126,7 @@ def publish_mqtt():
         to_battery.set_state(metrics["meter"]["battery"]["power_to_the_battery"])
 
         grid_charge_amps.set_state(metrics["grid_charge"]["grid_charging_amps"])
+        grid_discharge_amps.set_state(metrics["grid_charge"]["grid_discharging_amps"])
         grid_charge_amps.set_attributes(metrics["grid_charge"])
 
         if metrics['grid_charge']['grid_charge_optimal_income']:
