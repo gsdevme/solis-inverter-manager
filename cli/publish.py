@@ -144,4 +144,4 @@ def publish_mqtt():
 
         logger.info("Published")
 
-        time.sleep(60)
+        time.sleep(40)
