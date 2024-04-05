@@ -4,22 +4,14 @@ import struct
 
 
 class Modbus:
-    __instance = None
     __ip: str
     __serial: int
     __port: int
     __solarman: PySolarmanV5
     __has_connected: bool
 
-    def __new__(cls, *args, **kwargs):
-        if not Modbus.__instance:
-            Modbus.__instance = object.__new__(cls)
-        return Modbus.__instance
-
-    def __init__(self):
+    def __init__(self, ip: str, serial: int, port: int):
         self.__has_connected = False
-
-    def set_connection_settings(self, ip: str, serial: int, port: int):
         self.__ip = ip
         self.__port = port
         self.__serial = serial

@@ -4,144 +4,150 @@ import logging
 import manager.callbacks
 from solis.inverter import Inverter
 from solis.modbus import Modbus
-from environs import Env
 from ha_mqtt_discoverable import Settings, DeviceInfo
 from ha_mqtt_discoverable.sensors import BinarySensor, BinarySensorInfo, Sensor, SensorInfo, Subscriber
 from paho.mqtt.client import Client, MQTTMessage
 
 
-def publish_mqtt():
-    env = Env()
+class PublishMqtt:
+    __mqtt_host: str
+    __serial: int
+    __modbus: Modbus
 
-    serial = env.int("INVERTER_SERIAL")
+    def __init__(self, modbus: Modbus, serial: int, mqtt_host: str):
+        self.__mqtt_host = mqtt_host
+        self.__serial = serial
+        self.__modbus = modbus
 
-    prefix_name = f"Solis Inverter"
-    prefix_id = f"solis_inverter_{serial}"
+    def __call__(self):
 
-    mqtt_settings = Settings.MQTT(host=env.str("MQTT_HOST"))
-    client = Client("solar-inverter-manager")
-    client.on_connect = manager.callbacks.on_connect
-    client.on_message = manager.callbacks.on_message
+        prefix_name = f"Solis Inverter"
+        prefix_id = f"solis_inverter_{self.__serial}"
 
-    client.connect(host=env.str("MQTT_HOST"))
+        mqtt_settings = Settings.MQTT(host=self.__mqtt_host)
+        client = Client("solar-inverter-manager")
+        client.on_connect = manager.callbacks.on_connect
+        client.on_message = manager.callbacks.on_message
 
-    client.loop_start()
+        client.connect(host=self.__mqtt_host)
 
-    device = DeviceInfo(
-        name=prefix_name,
-        identifiers=prefix_id,
-        manufacturer="Solis")
+        client.loop_start()
 
-    poller_sensor = BinarySensor(Settings(mqtt=mqtt_settings,
-                                          entity=BinarySensorInfo(
-                                              name=f"{prefix_name} Poller",
-                                              device_class="running",
-                                              expire_after=240,
-                                              unique_id=f"{prefix_id}_running",
-                                              device=device)))
+        device = DeviceInfo(
+            name=prefix_name,
+            identifiers=prefix_id,
+            manufacturer="Solis")
 
-    from_battery = Sensor(Settings(mqtt=mqtt_settings,
-                                   entity=SensorInfo(
-                                       name=f"{prefix_name} Power From Battery",
-                                       device_class="power",
-                                       unit_of_measurement="W",
-                                       expire_after=240,
-                                       unique_id=f"{prefix_id}_power_from_battery",
-                                       device=device)))
+        poller_sensor = BinarySensor(Settings(mqtt=mqtt_settings,
+                                              entity=BinarySensorInfo(
+                                                  name=f"{prefix_name} Poller",
+                                                  device_class="running",
+                                                  expire_after=240,
+                                                  unique_id=f"{prefix_id}_running",
+                                                  device=device)))
 
-    to_battery = Sensor(Settings(mqtt=mqtt_settings,
-                                 entity=SensorInfo(
-                                     name=f"{prefix_name} Power To Battery",
-                                     device_class="power",
-                                     unit_of_measurement="W",
-                                     expire_after=240,
-                                     unique_id=f"{prefix_id}_power_to_battery",
-                                     device=device)))
-
-    battery = Sensor(Settings(mqtt=mqtt_settings,
-                              entity=SensorInfo(
-                                  name=f"{prefix_name} Battery",
-                                  device_class="battery",
-                                  unit_of_measurement="%",
-                                  expire_after=240,
-                                  unique_id=f"{prefix_id}_battery",
-                                  device=device)))
-
-    grid_charge_amps = Sensor(Settings(mqtt=mqtt_settings,
+        from_battery = Sensor(Settings(mqtt=mqtt_settings,
                                        entity=SensorInfo(
-                                           name=f"{prefix_name} Charge Amps",
-                                           device_class="current",
-                                           unit_of_measurement="A",
+                                           name=f"{prefix_name} Power From Battery",
+                                           device_class="power",
+                                           unit_of_measurement="W",
                                            expire_after=240,
-                                           unique_id=f"{prefix_id}_charge_amps",
+                                           unique_id=f"{prefix_id}_power_from_battery",
                                            device=device)))
 
-    grid_discharge_amps = Sensor(Settings(mqtt=mqtt_settings,
-                                       entity=SensorInfo(
-                                           name=f"{prefix_name} Discharge Amps",
-                                           device_class="current",
-                                           unit_of_measurement="A",
-                                           expire_after=240,
-                                           unique_id=f"{prefix_id}_discharge_amps",
-                                           device=device)))
+        to_battery = Sensor(Settings(mqtt=mqtt_settings,
+                                     entity=SensorInfo(
+                                         name=f"{prefix_name} Power To Battery",
+                                         device_class="power",
+                                         unit_of_measurement="W",
+                                         expire_after=240,
+                                         unique_id=f"{prefix_id}_power_to_battery",
+                                         device=device)))
 
-    optimal_income = BinarySensor(Settings(mqtt=mqtt_settings,
-                                           entity=BinarySensorInfo(
-                                               name=f"{prefix_name} optimal_income",
+        battery = Sensor(Settings(mqtt=mqtt_settings,
+                                  entity=SensorInfo(
+                                      name=f"{prefix_name} Battery",
+                                      device_class="battery",
+                                      unit_of_measurement="%",
+                                      expire_after=240,
+                                      unique_id=f"{prefix_id}_battery",
+                                      device=device)))
+
+        grid_charge_amps = Sensor(Settings(mqtt=mqtt_settings,
+                                           entity=SensorInfo(
+                                               name=f"{prefix_name} Charge Amps",
+                                               device_class="current",
+                                               unit_of_measurement="A",
                                                expire_after=240,
-                                               unique_id=f"{prefix_id}_optimal_income",
+                                               unique_id=f"{prefix_id}_charge_amps",
                                                device=device)))
 
-    pv = Sensor(Settings(mqtt=mqtt_settings,
-                         entity=SensorInfo(
-                             name=f"{prefix_name} PV",
-                             device_class="power",
-                             unit_of_measurement="W",
-                             expire_after=240,
-                             unique_id=f"{prefix_id}_pv",
-                             device=device)))
+        grid_discharge_amps = Sensor(Settings(mqtt=mqtt_settings,
+                                              entity=SensorInfo(
+                                                  name=f"{prefix_name} Discharge Amps",
+                                                  device_class="current",
+                                                  unit_of_measurement="A",
+                                                  expire_after=240,
+                                                  unique_id=f"{prefix_id}_discharge_amps",
+                                                  device=device)))
 
-    logger = logging.getLogger("poller")
+        optimal_income = BinarySensor(Settings(mqtt=mqtt_settings,
+                                               entity=BinarySensorInfo(
+                                                   name=f"{prefix_name} optimal_income",
+                                                   expire_after=240,
+                                                   unique_id=f"{prefix_id}_optimal_income",
+                                                   device=device)))
 
-    while True:
-        poller_sensor.on()
+        pv = Sensor(Settings(mqtt=mqtt_settings,
+                             entity=SensorInfo(
+                                 name=f"{prefix_name} PV",
+                                 device_class="power",
+                                 unit_of_measurement="W",
+                                 expire_after=240,
+                                 unique_id=f"{prefix_id}_pv",
+                                 device=device)))
 
-        try:
-            metrics = Inverter(Modbus()).poll()
-        except Exception as e:
-            logger.error("Error communicating with modbus: " + str(e))
+        logger = logging.getLogger("poller")
 
-            time.sleep(60)
+        while True:
+            poller_sensor.on()
 
-            continue
+            try:
+                metrics = Inverter(Modbus()).poll()
+            except Exception as e:
+                logger.error("Error communicating with modbus: " + str(e))
 
-        poller_sensor.set_attributes({
-            "time": metrics["pv"]["datetime"].strftime("%m/%d/%Y, %H:%M:%S"),
-        })
+                time.sleep(60)
 
-        battery.set_state(metrics["meter"]["battery"]["percentage"])
-        battery.set_attributes(metrics["meter"]["battery"])
+                continue
 
-        from_battery.set_state(metrics["meter"]["battery"]["power_from_the_battery"])
-        to_battery.set_state(metrics["meter"]["battery"]["power_to_the_battery"])
+            poller_sensor.set_attributes({
+                "time": metrics["pv"]["datetime"].strftime("%m/%d/%Y, %H:%M:%S"),
+            })
 
-        grid_charge_amps.set_state(metrics["grid_charge"]["grid_charging_amps"])
-        grid_discharge_amps.set_state(metrics["grid_charge"]["grid_discharging_amps"])
-        grid_charge_amps.set_attributes(metrics["grid_charge"])
+            battery.set_state(metrics["meter"]["battery"]["percentage"])
+            battery.set_attributes(metrics["meter"]["battery"])
 
-        if metrics['grid_charge']['grid_charge_optimal_income']:
-            optimal_income.on()
-        else:
-            optimal_income.off()
+            from_battery.set_state(metrics["meter"]["battery"]["power_from_the_battery"])
+            to_battery.set_state(metrics["meter"]["battery"]["power_to_the_battery"])
 
-        pv.set_state(metrics["pv"]["pv_now"])
-        pv.set_attributes({
-            "pv_yield_today": metrics["pv"]['pv_yield_today'],
-            "pv_yield_yesterday": metrics["pv"]['pv_yield_yesterday'],
-            "pv_yield_this_month": metrics["pv"]['pv_yield_this_month'],
-            "pv_yield_last_month": metrics["pv"]['pv_yield_last_month'],
-        })
+            grid_charge_amps.set_state(metrics["grid_charge"]["grid_charging_amps"])
+            grid_discharge_amps.set_state(metrics["grid_charge"]["grid_discharging_amps"])
+            grid_charge_amps.set_attributes(metrics["grid_charge"])
 
-        logger.info("Published")
+            if metrics['grid_charge']['grid_charge_optimal_income']:
+                optimal_income.on()
+            else:
+                optimal_income.off()
 
-        time.sleep(40)
+            pv.set_state(metrics["pv"]["pv_now"])
+            pv.set_attributes({
+                "pv_yield_today": metrics["pv"]['pv_yield_today'],
+                "pv_yield_yesterday": metrics["pv"]['pv_yield_yesterday'],
+                "pv_yield_this_month": metrics["pv"]['pv_yield_this_month'],
+                "pv_yield_last_month": metrics["pv"]['pv_yield_last_month'],
+            })
+
+            logger.info("Published")
+
+            time.sleep(40)

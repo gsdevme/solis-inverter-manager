@@ -36,6 +36,7 @@ OPTIMAL_INCOME_RUN_REGISTER_VALUE = 35
 
 
 class Inverter:
+    __modbus: Modbus
 
     def __init__(self, modbus: Modbus):
         self.__modbus = modbus

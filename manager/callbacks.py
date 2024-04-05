@@ -4,6 +4,15 @@ from solis.modbus import Modbus
 import logging
 
 
+class MqttOnConnect:
+    def __init__(self, modbus: Modbus):
+        self.__modbus = modbus
+
+    def __call__(self, client, userdata, flags, rc):
+        client.subscribe(topics.set_charge_topic)
+        client.subscribe(topics.set_discharge_topic)
+        client.subscribe(topics.set_optimal_income_topic)
+
 def set_charge(payload):
     try:
         amps = float(payload)
@@ -45,12 +54,6 @@ def set_optimal_income(payload):
         logging.getLogger("manager").info("disabling optimal income")
 
         Inverter(Modbus()).turn_off_optimal_income()
-
-def on_connect(client, userdata, flags, rc):
-    client.subscribe(topics.set_charge_topic)
-    client.subscribe(topics.set_discharge_topic)
-    client.subscribe(topics.set_optimal_income_topic)
-
 
 def on_message(client, userdata, message):
     payload = str(message.payload, 'utf8')

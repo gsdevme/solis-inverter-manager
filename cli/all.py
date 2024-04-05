@@ -3,5 +3,11 @@ from solis.modbus import Modbus
 from rich import print
 
 
-def read_all():
-    print(Inverter(Modbus()).poll())
+class ReadAll:
+    __modbus: Modbus
+
+    def __init__(self, modbus: Modbus):
+        self.__modbus = modbus
+
+    def __call__(self):
+        print(Inverter(self.__modbus).poll())
