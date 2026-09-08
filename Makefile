@@ -2,7 +2,7 @@ BINARY := solis-inverter-manager
 BIN_DIR := bin
 PKG     := ./cmd
 
-GOLANGCI_LINT_VERSION := v2.12.2
+GOLANGCI_LINT_VERSION := v2.13.2
 GOLANGCI_LINT := $(BIN_DIR)/golangci-lint
 
 .PHONY: build vet lint test test-e2e run
