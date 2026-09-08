@@ -1,0 +1,23 @@
+name: ci
+
+# Pull-request gate: run the full verification suite (lint/test/e2e).
+#
+# Phase 7 adds to this file a build-only Docker validation job (no push) for the
+# manager and sidecar images once their Dockerfiles exist, and a release.yml that
+# uses release-please + a multi-arch build/push to ghcr (GitHub Container
+# Registry). Until then this gate is checks-only so PRs get real Go verification.
+on:
+  pull_request:
+    branches: [master]
+
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  checks:
+    permissions:
+      contents: read
+    uses: ./.github/workflows/checks.yml
