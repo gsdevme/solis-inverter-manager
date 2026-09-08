@@ -1,3 +1,19 @@
+# Secrets / local env
+.env
+
+# Build output
+/bin/
+/dist/
+*.out
+*.test
+coverage.out
+
+# Editor / OS
+.DS_Store
+.idea/
+*.swp
+
+# Python (legacy app, removed in a later phase)
 */__pycache__/*
 __pycache__/*
 .pylintrc
