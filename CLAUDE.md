@@ -34,7 +34,12 @@ current status; live progress is tracked in GitHub **epic #25** (phase issues
   skeletons, `.env.dist`. The `internal/{mqtt,homeassistant,publisher,scheduler,
   mock,inverter,sidecarclient}` packages are doc-only stubs filled in by later
   phases.
-- **Phase 2** (#19) is next: the thin Python sidecar.
+- **Phase 2** (#19) ✅ — thin Python sidecar (`sidecar/`): `pysolarmanv5` transport
+  (persistent socket, single lock, reconnect-on-error), REST-ish generic register
+  RPCs, `MODE=mock` fixture server, pytest + Dockerfile; contract in
+  `docs/specs/01-sidecar-contract.md`.
+- **Phase 3** (#20) is next: the Go register map + decode, `internal/sidecarclient`,
+  then delete the legacy Python monolith.
 
 ## Commands
 

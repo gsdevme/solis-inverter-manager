@@ -5,10 +5,33 @@
 > `HA` MQTT/Home Assistant, `SC` scheduling, `CF` config, `LC` lifecycle/health,
 > `TS` testing, `DP` deployment.
 
-## Sidecar (`internal/sidecarclient`, `01-sidecar-contract.md`)
+## Sidecar (`sidecar/`, `01-sidecar-contract.md`)
 
-- TODO **REQ-SD-\***: localhost HTTP client; read fc03/fc04 blocks; guarded fc06
-  write; health probe. → `sidecarclient/*`
+The thin Python transport sidecar (Phase 2, #19). See
+[`01-sidecar-contract.md`](01-sidecar-contract.md) for the full wire contract.
+
+- **REQ-SD-01** Localhost HTTP on `:8081` (matches Go `SIDECAR_URL` default),
+  JSON request/response bodies. → `sidecar/http_api.py`, `sidecar/__main__.py`
+- **REQ-SD-02** `POST /read_input` (fc04) and `POST /read_holding` (fc03) block
+  reads of `{addr,count}` return raw `uint16` words `{addr,count,regs}` — no
+  decode/scale/sign. → `sidecar/http_api.py`, `sidecar/transport.py`
+- **REQ-SD-03** `POST /write_holding` (fc06) is an **unconditional** single-register
+  write; the read-before-write guard is the Go manager's job, not the sidecar's.
+  → `sidecar/http_api.py`, `sidecar/transport.py`
+- **REQ-SD-04** `GET /health` reports `{ok, inverter_reachable, mode}` via a cheap
+  reachability probe (never raises). → `sidecar/http_api.py`, `sidecar/transport.py`
+- **REQ-SD-05** Single persistent socket, one global lock (exactly one Modbus frame
+  in flight), reconnect-on-error between calls, per-call timeout from
+  `INVERTER_SOCKET_TIMEOUT`. → `sidecar/transport.py`
+- **REQ-SD-06** `MODE=mock` serves an in-memory register map seeded from a Phase 0
+  fixture (no `pysolarmanv5`, no socket). → `sidecar/mock.py`, `sidecar/config.py`
+- **REQ-SD-07** Input validation (`count` 1..125, `addr`/`value` 0..65535) and the
+  error envelope `{"error":{code,message}}` with codes `bad_request`/`timeout`/
+  `illegal_address`/`frame_error`/`connection_error`/`not_found`.
+  → `sidecar/http_api.py`, `sidecar/errors.py`
+
+> Note: the Go **client** (`internal/sidecarclient`) that consumes this contract,
+> and wiring `/health` into `/readyz`, are a later phase (see `REQ-LC-*`).
 
 ## Register map / decode (`internal/inverter`, `02-register-map.md`)
 

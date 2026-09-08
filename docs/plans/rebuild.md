@@ -29,7 +29,8 @@ Pod
 │     • HTTP client → sidecar on 127.0.0.1
 └── sidecar (Python, thin)   ── dumb Solarman V5 transport
       • pysolarmanv5 (sync), single persistent socket, one lock (serialized)
-      • HTTP/JSON RPC: read_input / read_holding / write_holding (raw uint16)
+      • REST-ish HTTP/JSON: POST read_input / read_holding / write_holding
+        (raw uint16) + GET /health — see docs/specs/01-sidecar-contract.md
       • reconnect-on-error between calls
       • MODE=mock → in-repo fake register server (seeded from Phase 0 fixtures)
 ```
@@ -78,8 +79,8 @@ TDD throughout; godog `.feature` coverage where behaviour is observable.
 |---|---|---|---|
 | 0 — Investigation & register confirmation | #17 | ✅ done (`6eb7cf9`) | Probe-confirmed map + fixtures in `docs/phase0/` |
 | 1 — Scaffold | #18 | ✅ done (`fb95c1e`) | Go module (go 1.27), cobra serve, config+slog, health, Makefile, golangci, godog harness, specs skeleton, `.env.dist`, secrets hygiene |
-| 2 — Thin Python sidecar | #19 | ⬜ next | `pysolarmanv5` transport, persistent socket, single lock, reconnect-on-error, generic RPCs, `MODE=mock`, own requirements + Dockerfile; author `docs/specs/01-sidecar-contract.md` |
-| 3 — Register map + decode (Go) | #20 | ⬜ | `internal/inverter` constants + decoders (fixture-tested), `internal/sidecarclient`; then delete the legacy Python app |
+| 2 — Thin Python sidecar | #19 | ✅ done | `sidecar/` `pysolarmanv5` transport, persistent socket, single lock, reconnect-on-error, REST-ish generic RPCs, `MODE=mock` fixture server, own requirements + Dockerfile + pytest; contract in `docs/specs/01-sidecar-contract.md` |
+| 3 — Register map + decode (Go) | #20 | ⬜ next | `internal/inverter` constants + decoders (fixture-tested), `internal/sidecarclient`; then delete the legacy Python app |
 | 4 — HA discovery + state (read-only) | #21 | ⬜ | autopaho, LWT+availability, device + read-only entities, retained state JSON, reconnect re-publish |
 | 5 — Writable controls | #22 | ⬜ | `number` (amps 0–60), `switch`/`select` (work mode 33/35), RTC sync; read-before-write + re-read confirm |
 | 6 — Scheduler | #23 | ⬜ | serialized ~60s poll, backoff, retained cache, failure-threshold readiness, injectable clock |

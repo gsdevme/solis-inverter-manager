@@ -5,7 +5,11 @@ PKG     := ./cmd
 GOLANGCI_LINT_VERSION := v2.13.2
 GOLANGCI_LINT := $(BIN_DIR)/golangci-lint
 
-.PHONY: build vet lint test test-e2e run
+PY        := python3
+SIDECAR    := sidecar
+
+.PHONY: build vet lint test test-e2e run \
+        sidecar-install sidecar-run sidecar-test sidecar-lint
 
 ## build: compile the binary into ./bin
 build:
@@ -34,3 +38,20 @@ $(GOLANGCI_LINT):
 ## lint: run golangci-lint (installs the pinned binary into ./bin on first use)
 lint: $(GOLANGCI_LINT)
 	$(GOLANGCI_LINT) run
+
+## sidecar-install: install the sidecar dev deps (pysolarmanv5, pytest, ruff)
+sidecar-install:
+	$(PY) -m pip install -r $(SIDECAR)/requirements-dev.txt
+
+## sidecar-run: run the sidecar against the Phase 0 fixtures (no hardware)
+sidecar-run:
+	MODE=mock $(PY) -m sidecar
+
+## sidecar-test: run the sidecar pytest suite
+sidecar-test:
+	$(PY) -m pytest $(SIDECAR)
+
+## sidecar-lint: lint + format-check the sidecar package with ruff
+sidecar-lint:
+	$(PY) -m ruff check $(SIDECAR)
+	$(PY) -m ruff format --check $(SIDECAR)
