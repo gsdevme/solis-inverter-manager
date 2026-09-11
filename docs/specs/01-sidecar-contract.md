@@ -92,6 +92,7 @@ Every non-2xx response carries:
 | `frame_error`      | 502  | Solarman V5 frame / CRC / decode error.                      |
 | `connection_error` | 503  | Socket dead or a fresh connection failed.                    |
 | `not_found`        | 404  | No route matched.                                            |
+| `internal_error`   | 500  | Unexpected server-side failure (catch-all). Also the client fallback for any unrecognised code. |
 
 The Go manager maps `timeout`/`connection_error`/`frame_error` to retryable poll
 failures; `bad_request`/`illegal_address` indicate a programming/addressing bug
