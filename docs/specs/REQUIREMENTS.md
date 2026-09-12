@@ -40,9 +40,40 @@ The thin Python transport sidecar (Phase 2, #19). See
 
 ## MQTT & Home Assistant (`internal/mqtt`, `internal/homeassistant`, `internal/publisher`)
 
-- TODO **REQ-HA-\***: discovery + state + availability, retained/QoS1, writable
-  controls, and the **READ-BEFORE-WRITE write-guard** on every setpoint (flash-wear
-  avoidance). → `homeassistant/*`, `mqtt/*`, `publisher/*`
+Phase 4 (#20/#21) is **read-only** discovery + state + availability. See
+[`03-mqtt-ha-discovery.md`](03-mqtt-ha-discovery.md) for the full topic scheme,
+payload shapes and the 33-entity table.
+
+- **REQ-HA-01** Discovery: one **retained**, QoS-1 config per entity at
+  `<HA_DISCOVERY_PREFIX>/<component>/<serial>_<key>/config` (object_id form);
+  identical shared device block (`identifiers:[<serial>]`, `manufacturer:"Solis"`,
+  `model:"RHI-3.6K-48ES-5G"`, `name:"Solis Inverter"`); `~` = base topic and the
+  only abbreviated key; `unique_id` = `object_id` = `<serial>_<key>`.
+  → `homeassistant/discovery.go`, `homeassistant/entities.go`, `publisher/publisher.go`
+- **REQ-HA-02** State: a single **retained**, QoS-1 JSON document at `<base>/state`;
+  every entity reads it via `value_template {{ value_json.<key> }}` (binary_sensor
+  via `{{ 'ON' if value_json.<key> else 'OFF' }}`); the state DTO's json tags equal
+  the 33-entity key set exactly. `rtc` is RFC3339; `rtc_drift` is seconds.
+  → `homeassistant/state.go`, `homeassistant/entities.go`
+- **REQ-HA-03** Entity classes per the `03` table; **daily** energy counters use
+  `state_class: total`, **lifetime** counters `total_increasing`; signed
+  battery/grid power is one signed entity (not split), with a derived
+  `battery_charging` binary_sensor. → `homeassistant/entities.go`
+- **REQ-HA-04** Availability + LWT: retained `offline` LWT on `<base>/availability`
+  at QoS 1; `online` retained on connect; explicit `offline` retained + clean
+  disconnect on graceful shutdown (clean disconnect suppresses the Will).
+  → `mqtt/client.go`, `publisher/publisher.go`, `cmd/serve.go`
+- **REQ-HA-05** Reconnect republish: on every (re)connection (`OnConnectionUp`),
+  republish discovery + availability(`online`) + last cached state.
+  → `cmd/serve.go`, `mqtt/client.go`
+- **REQ-HA-06** MODE gating: publish only when an MQTT broker URL is configured;
+  `live` requires it; `mock` without a broker runs the same `Collect` unit and logs
+  decoded telemetry. Interim poll cadence = `POLL_INTERVAL` (default 60s; real
+  scheduler is Phase 6). → `cmd/serve.go`, `config.go`
+- **REQ-HA-07** Read-only in Phase 4; writable controls (`number`/`switch`/`select`)
+  and the **READ-BEFORE-WRITE write-guard** on every setpoint (flash-wear avoidance)
+  are **Phase 5** — see the CRITICAL write-guard section in
+  [`03-mqtt-ha-discovery.md`](03-mqtt-ha-discovery.md). → `publisher/*` (Phase 5)
 
 ## Scheduling (`internal/scheduler`, `04-polling-scheduling.md`)
 
