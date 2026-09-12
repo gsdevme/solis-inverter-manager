@@ -4,6 +4,8 @@ import (
 	"context"
 	"net/url"
 	"testing"
+
+	"github.com/eclipse/paho.golang/paho"
 )
 
 func TestBuildClientConfigSetsLastWill(t *testing.T) {
@@ -87,6 +89,65 @@ func TestBuildClientConfigSetsServerURLAndCredentials(t *testing.T) {
 		t.Errorf("ClientID = %q, want %q", cfg.ClientID, "solis-1")
 	}
 }
+
+func TestBuildClientConfigDeliversInboundPublishToHandler(t *testing.T) {
+	u, err := url.Parse("mqtt://broker.example:1883")
+	if err != nil {
+		t.Fatalf("parse test URL: %v", err)
+	}
+
+	c := &Client{}
+	cfg := c.buildClientConfig(u, Options{})
+
+	if len(cfg.OnPublishReceived) != 1 {
+		t.Fatalf("OnPublishReceived length = %d, want 1", len(cfg.OnPublishReceived))
+	}
+
+	var gotTopic string
+	var gotPayload []byte
+	c.SetOnMessage(func(_ context.Context, topic string, payload []byte) {
+		gotTopic = topic
+		gotPayload = payload
+	})
+
+	handled, err := cfg.OnPublishReceived[0](paho.PublishReceived{
+		Packet: &paho.Publish{Topic: "solis/cmd/charge", Payload: []byte("10")},
+	})
+	if err != nil {
+		t.Fatalf("callback returned err = %v, want nil", err)
+	}
+	if !handled {
+		t.Error("callback returned handled = false, want true")
+	}
+	if gotTopic != "solis/cmd/charge" {
+		t.Errorf("handler topic = %q, want %q", gotTopic, "solis/cmd/charge")
+	}
+	if string(gotPayload) != "10" {
+		t.Errorf("handler payload = %q, want %q", string(gotPayload), "10")
+	}
+}
+
+func TestOnPublishReceivedWithNilHandlerDoesNotPanic(t *testing.T) {
+	u, _ := url.Parse("mqtt://broker.example:1883")
+	cfg := (&Client{}).buildClientConfig(u, Options{})
+
+	handled, err := cfg.OnPublishReceived[0](paho.PublishReceived{
+		Packet: &paho.Publish{Topic: "solis/cmd/charge", Payload: []byte("10")},
+	})
+	if err != nil {
+		t.Fatalf("callback returned err = %v, want nil", err)
+	}
+	if !handled {
+		t.Error("callback returned handled = false, want true")
+	}
+}
+
+// Subscribe requires a live autopaho ConnectionManager (c.cm), which the
+// I/O-free harness deliberately never constructs; standing up a fake broker
+// just to reach it would add flakiness for no coverage of the seam's logic.
+// A compile-time assertion that the method exists with the exact signature
+// Task 5 calls is sufficient here.
+var _ func(context.Context, string) error = (*Client)(nil).Subscribe
 
 func TestConnectRejectsMalformedBrokerURL(t *testing.T) {
 	_, err := Connect(context.Background(), Options{BrokerURL: "://no-scheme"})

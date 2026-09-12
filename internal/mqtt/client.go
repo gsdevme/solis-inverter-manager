@@ -37,8 +37,9 @@ type Client struct {
 	cm     *autopaho.ConnectionManager
 	logger *slog.Logger
 
-	mu   sync.Mutex
-	onUp func(ctx context.Context)
+	mu    sync.Mutex
+	onUp  func(ctx context.Context)
+	onMsg func(ctx context.Context, topic string, payload []byte)
 }
 
 // Connect parses the broker URL, builds the autopaho configuration (with LWT)
@@ -84,7 +85,15 @@ func (c *Client) buildClientConfig(u *url.URL, opts Options) autopaho.ClientConf
 			opts.Logger.Info("mqtt connected")
 			c.fireOnUp(context.Background())
 		},
-		ClientConfig: paho.ClientConfig{ClientID: opts.ClientID},
+		ClientConfig: paho.ClientConfig{
+			ClientID: opts.ClientID,
+			OnPublishReceived: []func(paho.PublishReceived) (bool, error){
+				func(pr paho.PublishReceived) (bool, error) {
+					c.fireOnMessage(context.Background(), pr.Packet.Topic, pr.Packet.Payload)
+					return true, nil
+				},
+			},
+		},
 	}
 
 	if opts.AvailabilityTopic != "" {
@@ -121,6 +130,30 @@ func (c *Client) fireOnUp(ctx context.Context) {
 	}
 }
 
+// SetOnMessage registers or replaces the callback invoked for each inbound
+// PUBLISH delivered by the broker — used by the controls path to decode HA
+// command topics. Safe to call after Connect.
+func (c *Client) SetOnMessage(fn func(ctx context.Context, topic string, payload []byte)) {
+	c.mu.Lock()
+	c.onMsg = fn
+	c.mu.Unlock()
+}
+
+// fireOnMessage loads the current message handler under the mutex and, if
+// non-nil, invokes it synchronously — unlike fireOnUp, which spawns a goroutine
+// for a potentially slow republish. Inbound command handling is expected to be
+// quick (or to hand off its own work), so a direct call keeps ordering
+// deterministic without blocking the paho read loop; the mutex is released
+// before invoking so the handler may safely re-enter the client.
+func (c *Client) fireOnMessage(ctx context.Context, topic string, payload []byte) {
+	c.mu.Lock()
+	fn := c.onMsg
+	c.mu.Unlock()
+	if fn != nil {
+		fn(ctx, topic, payload)
+	}
+}
+
 // Publish sends a message at QoS 1 with the given retain flag.
 func (c *Client) Publish(ctx context.Context, topic string, payload []byte, retain bool) error {
 	_, err := c.cm.Publish(ctx, &paho.Publish{
@@ -131,6 +164,19 @@ func (c *Client) Publish(ctx context.Context, topic string, payload []byte, reta
 	})
 	if err != nil {
 		return fmt.Errorf("mqtt publish %s: %w", topic, err)
+	}
+	return nil
+}
+
+// Subscribe registers a QoS-1 subscription for the given topic filter. It is
+// safe to call after Connect and idempotent across reconnects, so it can be
+// invoked from the OnConnectionUp hook to re-subscribe on every reconnect.
+func (c *Client) Subscribe(ctx context.Context, topicFilter string) error {
+	_, err := c.cm.Subscribe(ctx, &paho.Subscribe{
+		Subscriptions: []paho.SubscribeOptions{{Topic: topicFilter, QoS: 1}},
+	})
+	if err != nil {
+		return fmt.Errorf("mqtt subscribe %s: %w", topicFilter, err)
 	}
 	return nil
 }
