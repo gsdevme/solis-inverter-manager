@@ -1,9 +1,12 @@
-// Package publisher glues the homeassistant payload builder to the mqtt transport.
+// Package publisher glues the homeassistant payload builder to the mqtt transport
+// and provides the reusable read→decode poll unit.
 //
-// It will publish discovery configs, availability and per-reading state documents,
-// and expose a recording fake so tests run without a broker. See
-// docs/specs/03-mqtt-ha-discovery.md.
+// A Service publishes the retained Home Assistant discovery configs (once, on
+// startup), the retained availability payload (online/offline), and the retained
+// per-poll JSON state document. It depends on the Publisher seam rather than a
+// concrete MQTT client so tests can substitute a RecordingPublisher.
 //
-// TODO(phase-4): implement the Publisher interface, the production Service, and the
-// recording fake used by unit and godog tests.
+// Collect is the read→decode unit the Phase 6 scheduler calls unchanged: it reads
+// the two input register blocks through a RegisterReader and returns decoded
+// inverter.Telemetry. See docs/specs/03-mqtt-ha-discovery.md.
 package publisher
