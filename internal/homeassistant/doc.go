@@ -1,11 +1,17 @@
 // Package homeassistant is a pure payload builder for Home Assistant MQTT
 // autodiscovery.
 //
-// It will build the retained discovery configs and state documents for the Solis
-// entities (battery SOC/SOH, power flows, energy totals, work-mode, and the
-// writable setpoint controls) with a shared device block identifying the inverter.
-// See docs/specs/03-mqtt-ha-discovery.md.
+// It maps a decoded inverter.Telemetry to the Solis entity catalogue (Entities)
+// and builds two kinds of payload:
 //
-// TODO(phase-4): implement Config, topic helpers, BuildDiscovery/BuildState and the
-// entity catalogue (sensors + writable number/select controls).
+//   - Config.BuildDiscovery returns one discovery config per entity, each with a
+//     shared device block identifying the inverter, the `~` base topic, and a
+//     value_template that reads the shared state document.
+//   - Config.BuildState marshals the flat state document whose JSON tags equal the
+//     entity keys, so every entity's value_template resolves.
+//
+// The package performs no I/O and never reads the wall clock: clock drift is
+// passed into BuildState. Callers (the publisher) apply retain/QoS when
+// publishing. See docs/specs/03-mqtt-ha-discovery.md and the
+// home-assistant-mqtt-discovery skill, the source of truth for these rules.
 package homeassistant
