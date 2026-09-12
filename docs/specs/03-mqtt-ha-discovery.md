@@ -345,9 +345,12 @@ Every inbound command is validated before the guard runs (REQ-HA-12); a bad
 command is **logged and dropped** — it never crashes the manager and never reaches
 fc06:
 
-- **Amp numbers** are parsed as float. `NaN`, unparseable, or out-of-range values
-  are **rejected**; an in-band-but-high value is **clamped to 0–60 A**
-  (`ClampHAChargeAmps`). Non-numeric payloads are rejected outright.
+- **Amp numbers** are parsed as float. `NaN`, `±Inf`, or unparseable payloads are
+  **rejected outright** (logged and dropped, no write). Any successfully-parsed
+  **finite** float is **clamped to the 0–60 A** control range (`ClampHAChargeAmps`)
+  and then written under the read-before-write guard — **no numeric value is ever
+  rejected for being out of range; only a value that fails to parse is rejected**
+  (Ruling R6, matching the controls action `EncodeAmps(ClampHAChargeAmps(parse))`).
 - **The switch** rejects anything that is not exactly `"ON"` or `"OFF"`.
 
 ### RTC sync button

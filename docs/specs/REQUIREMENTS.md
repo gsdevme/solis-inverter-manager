@@ -93,10 +93,14 @@ See the write-path sections of
 - **REQ-HA-11** Command topic `~/<key>/set`; subscribe to `<base>/+/set` and
   **re-subscribe on every reconnect** (`OnConnectionUp`, alongside discovery/
   availability/state republish). → `internal/mqtt`, `internal/cmd`
-- **REQ-HA-12** Server-side validation: amps parsed as float, NaN/unparseable/
-  out-of-range rejected, in-band-but-high **clamped to 0–60 A** (`ClampHAChargeAmps`);
-  switch rejects anything not `"ON"`/`"OFF"`; bad commands **logged and dropped**
-  (never crash). → `internal/controls`
+- **REQ-HA-12** Server-side validation (Ruling R6): amps parsed as float — `NaN`,
+  `±Inf`, or unparseable payloads **rejected outright** (logged and dropped, no
+  write); any successfully-parsed **finite** float is **clamped to 0–60 A**
+  (`ClampHAChargeAmps`) and written under the guard — **no value is rejected for
+  being out of range**, only for failing to parse (matches
+  `EncodeAmps(ClampHAChargeAmps(parse))`). Switch rejects anything not
+  `"ON"`/`"OFF"`; bad commands **logged and dropped** (never crash).
+  → `internal/controls`
 - **REQ-HA-13** Manual **"Sync RTC now" button** (`rtc_sync`): guarded per-register
   write of the six RTC holding registers `43000–43005` to the current local
   datetime; periodic/threshold-gated auto-sync is **deferred to Phase 6**. Kill-switch
