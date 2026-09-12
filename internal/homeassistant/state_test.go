@@ -27,12 +27,27 @@ func stateJSONTags(t *testing.T) map[string]bool {
 }
 
 // TestStateTagsEqualEntityKeys is the load-bearing round-trip contract: every
-// entity has a state field and every state field has an entity.
+// stateful entity has a state field and every state field has an entity. Buttons
+// are stateless (they publish a press payload, never read from ~/state), so they
+// are exempt from the "every key has a state field" direction.
 func TestStateTagsEqualEntityKeys(t *testing.T) {
 	tags := stateJSONTags(t)
 	keys := map[string]bool{}
 	for _, e := range Entities() {
+		if e.Component == Button {
+			// Stateless: has no json tag on the State DTO by design.
+			if tags[e.Key] {
+				t.Errorf("button %q must not have a State field", e.Key)
+			}
+			continue
+		}
 		keys[e.Key] = true
+	}
+	if len(keys) != 36 {
+		t.Errorf("got %d stateful entity keys, want 36", len(keys))
+	}
+	if len(tags) != 36 {
+		t.Errorf("got %d state json tags, want 36", len(tags))
 	}
 	for k := range keys {
 		if !tags[k] {
@@ -41,7 +56,7 @@ func TestStateTagsEqualEntityKeys(t *testing.T) {
 	}
 	for tag := range tags {
 		if !keys[tag] {
-			t.Errorf("State field %q has no entity", tag)
+			t.Errorf("State field %q has no (stateful) entity", tag)
 		}
 	}
 }
@@ -63,7 +78,8 @@ func sampleTelemetry() inverter.Telemetry {
 
 func TestBuildStateTopicAndValues(t *testing.T) {
 	c := testConfig()
-	msg, err := c.BuildState(sampleTelemetry(), 90*time.Second)
+	sp := Setpoints{SetChargeCurrent: 25.5, SetDischargeCurrent: 40, OptimalIncome: true}
+	msg, err := c.BuildState(sampleTelemetry(), 90*time.Second, sp)
 	if err != nil {
 		t.Fatalf("BuildState: %v", err)
 	}
@@ -76,9 +92,12 @@ func TestBuildStateTopicAndValues(t *testing.T) {
 		t.Fatalf("bad payload: %v", err)
 	}
 
-	// Key set equals the entity keys.
+	// Key set equals the stateful entity keys (buttons carry no state field).
 	keys := map[string]bool{}
 	for _, e := range Entities() {
+		if e.Component == Button {
+			continue
+		}
 		keys[e.Key] = true
 	}
 	if len(got) != len(keys) {
@@ -116,6 +135,32 @@ func TestBuildStateTopicAndValues(t *testing.T) {
 	// Raw system enums as numbers.
 	if got["status"] != float64(3) || got["operating_status"] != float64(4099) {
 		t.Errorf("status/operating_status = %v / %v", got["status"], got["operating_status"])
+	}
+	// Setpoints folded in from Setpoints.
+	if got["set_charge_current"] != 25.5 || got["set_discharge_current"] != float64(40) {
+		t.Errorf("setpoints = %v / %v", got["set_charge_current"], got["set_discharge_current"])
+	}
+	// OptimalIncome bool rendered as ON/OFF string.
+	if got["optimal_income"] != "ON" {
+		t.Errorf("optimal_income = %v, want ON", got["optimal_income"])
+	}
+	// rtc_sync (button) must NOT appear in the state document.
+	if _, present := got["rtc_sync"]; present {
+		t.Errorf("state should not carry rtc_sync, got %v", got["rtc_sync"])
+	}
+}
+
+func TestBuildStateOptimalIncomeOff(t *testing.T) {
+	msg, err := testConfig().BuildState(sampleTelemetry(), 0, Setpoints{OptimalIncome: false})
+	if err != nil {
+		t.Fatalf("BuildState: %v", err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(msg.Payload, &got); err != nil {
+		t.Fatalf("bad payload: %v", err)
+	}
+	if got["optimal_income"] != "OFF" {
+		t.Errorf("optimal_income = %v, want OFF", got["optimal_income"])
 	}
 }
 

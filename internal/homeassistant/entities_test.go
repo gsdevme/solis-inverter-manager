@@ -13,6 +13,7 @@ var wantKeys = []string{
 	"generation_today", "generation_yesterday", "battery_total_charge", "battery_charge_today",
 	"battery_total_discharge", "battery_discharge_today",
 	"status", "operating_status", "work_mode", "rtc", "rtc_drift",
+	"set_charge_current", "set_discharge_current", "optimal_income", "rtc_sync",
 }
 
 func TestEntitiesCoverEveryTelemetryField(t *testing.T) {
@@ -27,7 +28,9 @@ func TestEntitiesCoverEveryTelemetryField(t *testing.T) {
 			t.Errorf("duplicate entity key %q", e.Key)
 		}
 		got[e.Key] = true
-		if e.Component != Sensor && e.Component != BinarySensor {
+		switch e.Component {
+		case Sensor, BinarySensor, Number, Switch, Button:
+		default:
 			t.Errorf("entity %q has unexpected component %q", e.Key, e.Component)
 		}
 	}

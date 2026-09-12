@@ -22,6 +22,9 @@ func (c Config) BuildDiscovery() ([]Message, error) {
 	entities := Entities()
 	msgs := make([]Message, 0, len(entities))
 	for _, e := range entities {
+		if e.Command && !c.ControlsEnabled {
+			continue
+		}
 		body, err := json.Marshal(c.buildEntityPayload(e, device))
 		if err != nil {
 			return nil, fmt.Errorf("marshal discovery for %s: %w", e.Key, err)
@@ -41,7 +44,6 @@ func (c Config) buildEntityPayload(e Entity, device map[string]any) map[string]a
 		"name":                  e.Name,
 		"unique_id":             uniq,
 		"object_id":             uniq,
-		"state_topic":           "~/state",
 		"availability_topic":    "~/availability",
 		"payload_available":     "online",
 		"payload_not_available": "offline",
@@ -59,8 +61,13 @@ func (c Config) buildEntityPayload(e Entity, device map[string]any) map[string]a
 	if e.Category != "" {
 		p["entity_category"] = e.Category
 	}
+	if e.Command {
+		p["command_topic"] = "~/" + e.Key + "/set"
+	}
 
-	if e.Component == BinarySensor {
+	switch e.Component {
+	case BinarySensor:
+		p["state_topic"] = "~/state"
 		p["payload_on"] = "ON"
 		p["payload_off"] = "OFF"
 		if e.InvertBool {
@@ -68,7 +75,25 @@ func (c Config) buildEntityPayload(e Entity, device map[string]any) map[string]a
 		} else {
 			p["value_template"] = fmt.Sprintf("{{ 'ON' if value_json.%s else 'OFF' }}", e.Key)
 		}
-	} else {
+	case Switch:
+		p["state_topic"] = "~/state"
+		p["payload_on"] = e.PayloadOn
+		p["payload_off"] = e.PayloadOff
+		p["state_on"] = e.StateOn
+		p["state_off"] = e.StateOff
+		p["value_template"] = fmt.Sprintf("{{ value_json.%s }}", e.Key)
+	case Number:
+		p["state_topic"] = "~/state"
+		p["min"] = e.Min
+		p["max"] = e.Max
+		p["step"] = e.Step
+		p["mode"] = e.Mode
+		p["value_template"] = fmt.Sprintf("{{ value_json.%s }}", e.Key)
+	case Button:
+		// A button is stateless: no state_topic, no value_template.
+		p["payload_press"] = e.PayloadPress
+	default:
+		p["state_topic"] = "~/state"
 		p["value_template"] = fmt.Sprintf("{{ value_json.%s }}", e.Key)
 	}
 	return p

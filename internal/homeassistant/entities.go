@@ -4,6 +4,9 @@ package homeassistant
 const (
 	Sensor       = "sensor"
 	BinarySensor = "binary_sensor"
+	Number       = "number"
+	Switch       = "switch"
+	Button       = "button"
 )
 
 // Fixed device identity for the Solis inverter. Every entity carries the same
@@ -20,6 +23,10 @@ type Config struct {
 	DiscoveryPrefix string // e.g. "homeassistant"
 	TopicPrefix     string // e.g. "solis"
 	Serial          string // datalogger serial (device identifier)
+	// ControlsEnabled gates the writable command entities. When false (the
+	// default), BuildDiscovery emits only the read-only sensors; when true it
+	// also emits the Number/Switch/Button controls.
+	ControlsEnabled bool
 }
 
 // BaseTopic is the per-inverter base topic used as the `~` abbreviation.
@@ -42,7 +49,7 @@ type Message struct {
 // Key is both the discovery object-id suffix and the JSON field the entity reads
 // (value_json.<Key>), so every entity Key must match a state-DTO JSON tag.
 type Entity struct {
-	Component   string // "sensor" | "binary_sensor"
+	Component   string // "sensor" | "binary_sensor" | "number" | "switch" | "button"
 	Key         string
 	Name        string
 	DeviceClass string // "" if none
@@ -52,6 +59,23 @@ type Entity struct {
 	// InvertBool, for binary_sensors, emits ON when the JSON value is falsy.
 	// Unused by the current Solis catalogue; kept for parity with the shape.
 	InvertBool bool
+
+	// Command marks a writable control (Number/Switch/Button). When set,
+	// BuildDiscovery emits a command_topic and the component-specific keys
+	// below, and gates the entity behind Config.ControlsEnabled.
+	Command bool
+
+	// Number bounds and step, plus the HA input Mode ("box" | "slider" | "auto").
+	Min, Max, Step float64
+	Mode           string
+
+	// Switch payloads (published on toggle) and states (matched in the shared
+	// state document by its value_template).
+	PayloadOn, PayloadOff string
+	StateOn, StateOff     string
+
+	// PayloadPress is the payload a Button publishes when pressed.
+	PayloadPress string
 }
 
 // Entities returns the full, stably ordered catalogue published for the inverter.
@@ -104,5 +128,12 @@ func Entities() []Entity {
 		{Component: Sensor, Key: "work_mode", Name: "Work mode", Category: "diagnostic"},
 		{Component: Sensor, Key: "rtc", Name: "RTC", DeviceClass: "timestamp", Category: "diagnostic"},
 		{Component: Sensor, Key: "rtc_drift", Name: "RTC drift", DeviceClass: "duration", Unit: "s", Category: "diagnostic"},
+
+		// Writable controls. Gated behind Config.ControlsEnabled in BuildDiscovery;
+		// always present in this catalogue so the state round-trip stays exhaustive.
+		{Component: Number, Key: "set_charge_current", Name: "Set charge current", Command: true, Min: 0, Max: 60, Step: 0.1, Mode: "box", Unit: "A"},
+		{Component: Number, Key: "set_discharge_current", Name: "Set discharge current", Command: true, Min: 0, Max: 60, Step: 0.1, Mode: "box", Unit: "A"},
+		{Component: Switch, Key: "optimal_income", Name: "Optimal income", Command: true, PayloadOn: "ON", PayloadOff: "OFF", StateOn: "ON", StateOff: "OFF"},
+		{Component: Button, Key: "rtc_sync", Name: "Sync RTC now", Command: true, PayloadPress: "PRESS", Category: "diagnostic"},
 	}
 }

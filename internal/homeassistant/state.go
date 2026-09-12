@@ -52,13 +52,29 @@ type State struct {
 	WorkMode        string  `json:"work_mode"`
 	RTC             string  `json:"rtc"`
 	RTCDrift        float64 `json:"rtc_drift"`
+
+	SetChargeCurrent    float64 `json:"set_charge_current"`
+	SetDischargeCurrent float64 `json:"set_discharge_current"`
+	OptimalIncome       string  `json:"optimal_income"`
+}
+
+// Setpoints is the current writable-control state, read from the holding bank
+// by the caller and folded into the shared state document.
+type Setpoints struct {
+	SetChargeCurrent    float64
+	SetDischargeCurrent float64
+	OptimalIncome       bool
 }
 
 // BuildState marshals a decoded Telemetry (plus the externally computed clock
 // drift) into the retained state document. The topic is the shared StateTopic.
 // drift is supplied by the caller because this package is pure and must not read
 // the wall clock.
-func (c Config) BuildState(t inverter.Telemetry, drift time.Duration) (Message, error) {
+func (c Config) BuildState(t inverter.Telemetry, drift time.Duration, sp Setpoints) (Message, error) {
+	optimalIncome := "OFF"
+	if sp.OptimalIncome {
+		optimalIncome = "ON"
+	}
 	st := State{
 		BatteryVoltage:  t.Battery.VoltageV,
 		BatteryCurrent:  t.Battery.CurrentA,
@@ -98,6 +114,10 @@ func (c Config) BuildState(t inverter.Telemetry, drift time.Duration) (Message, 
 		WorkMode:        workModeLabel(t.System.WorkMode),
 		RTC:             t.Time.Format(time.RFC3339),
 		RTCDrift:        drift.Seconds(),
+
+		SetChargeCurrent:    sp.SetChargeCurrent,
+		SetDischargeCurrent: sp.SetDischargeCurrent,
+		OptimalIncome:       optimalIncome,
 	}
 	body, err := json.Marshal(st)
 	if err != nil {

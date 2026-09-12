@@ -9,14 +9,47 @@ func testConfig() Config {
 	return Config{DiscoveryPrefix: "homeassistant", TopicPrefix: "solis", Serial: "1234567890"}
 }
 
+// wantMessages counts the discovery messages a config should emit: every entity
+// unless it is a gated command entity and controls are disabled.
+func wantMessages(c Config) int {
+	n := 0
+	for _, e := range Entities() {
+		if e.Command && !c.ControlsEnabled {
+			continue
+		}
+		n++
+	}
+	return n
+}
+
+func mustBuildDiscoveryFor(t *testing.T, c Config) map[string]map[string]any {
+	t.Helper()
+	msgs, err := c.BuildDiscovery()
+	if err != nil {
+		t.Fatalf("BuildDiscovery: %v", err)
+	}
+	if want := wantMessages(c); len(msgs) != want {
+		t.Fatalf("got %d messages, want %d", len(msgs), want)
+	}
+	out := map[string]map[string]any{}
+	for _, m := range msgs {
+		var p map[string]any
+		if err := json.Unmarshal(m.Payload, &p); err != nil {
+			t.Fatalf("bad payload for %s: %v", m.Topic, err)
+		}
+		out[m.Topic] = p
+	}
+	return out
+}
+
 func mustBuildDiscovery(t *testing.T) map[string]map[string]any {
 	t.Helper()
 	msgs, err := testConfig().BuildDiscovery()
 	if err != nil {
 		t.Fatalf("BuildDiscovery: %v", err)
 	}
-	if len(msgs) != len(Entities()) {
-		t.Fatalf("got %d messages, want %d", len(msgs), len(Entities()))
+	if want := wantMessages(testConfig()); len(msgs) != want {
+		t.Fatalf("got %d messages, want %d", len(msgs), want)
 	}
 	out := map[string]map[string]any{}
 	for _, m := range msgs {
@@ -157,5 +190,108 @@ func TestDiscoveryBareDiagnosticSensors(t *testing.T) {
 		if p["value_template"] != "{{ value_json."+key+" }}" {
 			t.Errorf("%s value_template = %v", key, p["value_template"])
 		}
+	}
+}
+
+// TestDiscoveryControlsDisabledByDefault covers the Phase-4 behaviour: with
+// ControlsEnabled unset, only the 33 read-only entities are published and no
+// message carries a command_topic.
+func TestDiscoveryControlsDisabledByDefault(t *testing.T) {
+	byTopic := mustBuildDiscoveryFor(t, testConfig())
+	if len(byTopic) != 33 {
+		t.Fatalf("got %d discovery messages, want 33", len(byTopic))
+	}
+	for topic, p := range byTopic {
+		if _, present := p["command_topic"]; present {
+			t.Errorf("%s should not carry command_topic when controls are disabled", topic)
+		}
+	}
+	for _, key := range []string{"set_charge_current", "set_discharge_current", "optimal_income", "rtc_sync"} {
+		for _, comp := range []string{"number", "switch", "button"} {
+			topic := "homeassistant/" + comp + "/1234567890_" + key + "/config"
+			if _, present := byTopic[topic]; present {
+				t.Errorf("command entity %q should not be published when controls are disabled", key)
+			}
+		}
+	}
+}
+
+// TestDiscoveryControlsEnabled verifies the four command entities and their
+// component-specific discovery keys when ControlsEnabled is true.
+func TestDiscoveryControlsEnabled(t *testing.T) {
+	c := testConfig()
+	c.ControlsEnabled = true
+	byTopic := mustBuildDiscoveryFor(t, c)
+	if len(byTopic) != 37 {
+		t.Fatalf("got %d discovery messages, want 37", len(byTopic))
+	}
+
+	num := byTopic["homeassistant/number/1234567890_set_charge_current/config"]
+	if num == nil {
+		t.Fatal("missing set_charge_current number")
+	}
+	if num["command_topic"] != "~/set_charge_current/set" {
+		t.Errorf("command_topic = %v", num["command_topic"])
+	}
+	if num["min"] != float64(0) || num["max"] != float64(60) || num["step"] != 0.1 {
+		t.Errorf("min/max/step = %v / %v / %v", num["min"], num["max"], num["step"])
+	}
+	if num["mode"] != "box" || num["unit_of_measurement"] != "A" {
+		t.Errorf("mode/unit = %v / %v", num["mode"], num["unit_of_measurement"])
+	}
+	if num["value_template"] != "{{ value_json.set_charge_current }}" {
+		t.Errorf("value_template = %v", num["value_template"])
+	}
+	if num["state_topic"] != "~/state" {
+		t.Errorf("state_topic = %v", num["state_topic"])
+	}
+
+	dis := byTopic["homeassistant/number/1234567890_set_discharge_current/config"]
+	if dis == nil || dis["command_topic"] != "~/set_discharge_current/set" {
+		t.Errorf("set_discharge_current command_topic = %v", dis["command_topic"])
+	}
+
+	sw := byTopic["homeassistant/switch/1234567890_optimal_income/config"]
+	if sw == nil {
+		t.Fatal("missing optimal_income switch")
+	}
+	if sw["command_topic"] != "~/optimal_income/set" {
+		t.Errorf("switch command_topic = %v", sw["command_topic"])
+	}
+	if sw["payload_on"] != "ON" || sw["payload_off"] != "OFF" {
+		t.Errorf("payload_on/off = %v / %v", sw["payload_on"], sw["payload_off"])
+	}
+	if sw["state_on"] != "ON" || sw["state_off"] != "OFF" {
+		t.Errorf("state_on/off = %v / %v", sw["state_on"], sw["state_off"])
+	}
+	if sw["value_template"] != "{{ value_json.optimal_income }}" {
+		t.Errorf("switch value_template = %v", sw["value_template"])
+	}
+	if sw["state_topic"] != "~/state" {
+		t.Errorf("switch state_topic = %v", sw["state_topic"])
+	}
+
+	btn := byTopic["homeassistant/button/1234567890_rtc_sync/config"]
+	if btn == nil {
+		t.Fatal("missing rtc_sync button")
+	}
+	if btn["command_topic"] != "~/rtc_sync/set" {
+		t.Errorf("button command_topic = %v", btn["command_topic"])
+	}
+	if btn["payload_press"] != "PRESS" {
+		t.Errorf("payload_press = %v", btn["payload_press"])
+	}
+	if btn["entity_category"] != "diagnostic" {
+		t.Errorf("button entity_category = %v", btn["entity_category"])
+	}
+	if _, present := btn["state_topic"]; present {
+		t.Errorf("button should not carry state_topic, got %v", btn["state_topic"])
+	}
+	if _, present := btn["value_template"]; present {
+		t.Errorf("button should not carry value_template, got %v", btn["value_template"])
+	}
+	// Button keeps the shared device/availability block.
+	if btn["availability_topic"] != "~/availability" || btn["device"] == nil {
+		t.Errorf("button availability/device = %v / %v", btn["availability_topic"], btn["device"])
 	}
 }
