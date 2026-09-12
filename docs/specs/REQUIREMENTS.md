@@ -75,6 +75,36 @@ payload shapes and the 33-entity table.
   are **Phase 5** — see the CRITICAL write-guard section in
   [`03-mqtt-ha-discovery.md`](03-mqtt-ha-discovery.md). → `publisher/*` (Phase 5)
 
+Phase 5 (#22) adds the **write half**: native HA controls with a guarded write path.
+See the write-path sections of
+[`03-mqtt-ha-discovery.md`](03-mqtt-ha-discovery.md).
+
+- **REQ-HA-08** Number amp controls: `set_charge_current` (`43141`) and
+  `set_discharge_current` (`43142`), HA `number`, 0–60 A step 0.1, U16 `÷10` A,
+  written via fc06 behind the READ-BEFORE-WRITE guard.
+  → `internal/homeassistant`, `internal/controls`
+- **REQ-HA-09** Optimal-income switch (`"ON"`/`"OFF"`): **read-modify-write that
+  flips ONLY bit 1** of `43110` (RegWorkMode), preserving all other bits (`33`↔`35`
+  on this unit). → `internal/controls`, `internal/inverter`
+- **REQ-HA-10** **READ-BEFORE-WRITE guard** on every write: read → compare →
+  write-if-differs (fc06) → re-read to confirm; **desired == current is skipped
+  with no fc06 and logged at `info`**; a mismatched re-read is a logged, non-fatal
+  error. → `internal/controls`
+- **REQ-HA-11** Command topic `~/<key>/set`; subscribe to `<base>/+/set` and
+  **re-subscribe on every reconnect** (`OnConnectionUp`, alongside discovery/
+  availability/state republish). → `internal/mqtt`, `internal/cmd`
+- **REQ-HA-12** Server-side validation: amps parsed as float, NaN/unparseable/
+  out-of-range rejected, in-band-but-high **clamped to 0–60 A** (`ClampHAChargeAmps`);
+  switch rejects anything not `"ON"`/`"OFF"`; bad commands **logged and dropped**
+  (never crash). → `internal/controls`
+- **REQ-HA-13** Manual **"Sync RTC now" button** (`rtc_sync`): guarded per-register
+  write of the six RTC holding registers `43000–43005` to the current local
+  datetime; periodic/threshold-gated auto-sync is **deferred to Phase 6**. Kill-switch
+  `CONTROLS_ENABLED` (default true); **Ruling R1** — when false, the four command
+  entities are **omitted from discovery** and the command topic is not subscribed
+  (state setpoint fields may still publish).
+  → `internal/homeassistant`, `internal/controls`
+
 ## Scheduling (`internal/scheduler`, `04-polling-scheduling.md`)
 
 - TODO **REQ-SC-\***: serialised poll loop; retries; readiness reporting; guarded

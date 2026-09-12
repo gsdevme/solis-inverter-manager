@@ -228,32 +228,150 @@ Poll cadence is the **interim** fixed-interval ticker at `POLL_INTERVAL`
 (default 60s, floored by `MinPollInterval`) with no backoff. The real scheduler
 (retries, backoff, guarded writes) is **Phase 6** (`internal/scheduler`).
 
-## Read-only note (Phase 4) and Phase 5 forward reference
+## Read-only note (Phase 4)
 
-Phase 4 emits **read-only** sensors only. The writable controls
-(`number`/`switch`/`select` for charge/discharge amps and work mode, plus
-optional RTC auto-sync) and the READ-BEFORE-WRITE write-guard are **Phase 5**.
-The CRITICAL section below is that requirement, retained here as the forward
-reference; do not treat it as implemented in Phase 4.
+Phase 4 emits **read-only** sensors only. The writable controls and the
+READ-BEFORE-WRITE write-guard are **Phase 5**, specified in the sections below
+(CRITICAL write-guard, then the write path). Do not treat them as implemented in
+Phase 4.
 
 ## CRITICAL design constraint — READ-BEFORE-WRITE write-guard
 
-> This is a first-class requirement, fully specified in a later phase.
+> This is a **first-class requirement** and governs every write the manager ever
+> issues (REQ-HA-10).
 
 The manager MUST **always read a register's current value first and only issue a
 Modbus write (fc06) if the desired value differs** from what is already stored.
 Never write unconditionally.
 
-**Why:** the inverter's holding registers are **flash-backed**; every needless write
-causes **flash wear** and shortens the datalogger/inverter's life. A no-op write is
-never harmless.
+**Why:** the inverter's holding registers are **flash-backed** (see
+[`docs/phase0/findings.md`](../phase0/findings.md) — the write-path findings and
+RTC-drift notes). Every needless write causes **flash wear** and shortens the
+datalogger/inverter's life. A no-op write is **never** harmless, even though the
+inverter acknowledges it: the Phase 0 probe confirmed a no-op `350→350` fc06 on
+`43141` is accepted silently, so the inverter will not protect us — the manager
+must.
+
+**The guard algorithm — run on every write, no exceptions:**
+
+1. **Read** the register's current value (fc03).
+2. **Compare** to the desired value.
+3. **Write** (fc06) **only if they differ**.
+4. **Re-read** to confirm the stored value now equals what was written.
+
+- A write where **desired == current is SKIPPED** — **no fc06 is issued** — and
+  the skip is **logged at `info`** (flash-wear avoidance is the whole point, so
+  the skip is a first-class, observable outcome, not a silent short-circuit).
+- A re-read that **does not match** the written value is an **error**: it is
+  **logged** and is **non-fatal** (the manager keeps running and the next poll/
+  command re-evaluates).
 
 **Scope:** applies to **all** setpoints —
-- timed charge current `43141`,
-- timed discharge current `43142`,
-- work-mode `43110`,
-- and any RTC auto-sync: only write `43000–43005` when measured clock **drift
-  exceeds a threshold** (never on every poll).
+- timed charge current `43141` (REQ-HA-08),
+- timed discharge current `43142` (REQ-HA-08),
+- work-mode `43110` (REQ-HA-09, read-modify-write — see below),
+- and the RTC block `43000–43005` (REQ-HA-13), guarded **per register**: the
+  button writes only the registers of the six whose value differs.
 
-TODO: specify the compare/skip logic, tolerance for the RTC drift threshold, and how
-skipped writes are logged/surfaced.
+## Write path (Phase 5) — command topics, controls, state, RTC
+
+Phase 5 adds the **write half** of the manager: native Home Assistant controls
+that write setpoints back to the inverter, each one gated by the READ-BEFORE-WRITE
+guard above. Phase 5 lives in a new `internal/controls` package (the guard +
+validation + command handlers); `internal/homeassistant` gains the four control
+entities in its catalogue; `internal/mqtt` gains command-topic subscription; and
+`internal/cmd/serve.go` wires the subscription into the reconnect hook.
+
+### Command topics
+
+- **Command topic** = `~/<key>/set`, where `~` is the per-inverter base topic
+  (`<MQTT_TOPIC_PREFIX>/<INVERTER_SERIAL>`, as for state/availability) and
+  `<key>` is the entity key (e.g. `<base>/set_charge_current/set`). Each control's
+  discovery payload carries its own `command_topic: ~/<key>/set`.
+- The manager **subscribes to `<base>/+/set`** (single wildcard) at connect and
+  **re-subscribes on every reconnect**, alongside the existing discovery /
+  availability / state republish on `OnConnectionUp` (REQ-HA-11). The single
+  subscription covers all four controls; the `<key>` segment is routed to the
+  matching handler.
+
+### Control entities
+
+Four writable entities join the catalogue (the read-only table above is unchanged
+at 33; with controls enabled the device carries 37). Registers are the Phase 0
+confirmed addresses — never invent them.
+
+| Key | Component | Range / payloads | Register | Encoding |
+| --- | --- | --- | --- | --- |
+| `set_charge_current` | `number` | 0–60 A, step 0.1 | `43141` (RegTimedChargeCurrent) | U16, `÷10` A |
+| `set_discharge_current` | `number` | 0–60 A, step 0.1 | `43142` (RegTimedDischargeCurrent) | U16, `÷10` A |
+| `optimal_income` | `switch` | `"ON"` / `"OFF"` | `43110` (RegWorkMode) bit 1 | read-modify-write; `33`↔`35` |
+| `rtc_sync` | `button` | press (any payload) | `43000–43005` (RegRTCSet) | U16×6 local datetime; `entity_category: diagnostic` |
+
+- **Amp numbers** (REQ-HA-08) write the scaled integer `round(amps, 1) * 10` via
+  fc06, behind the guard. The `0–60 A` range is the deliberate HA clamp — the unit
+  physically accepts up to 100 A (Phase 0 ambiguity #9), but the control is capped.
+- **Optimal-income switch** (REQ-HA-09) is a **read-modify-write that flips ONLY
+  bit 1** of `43110`, preserving every other bit: read `43110`, set/clear bit 1
+  per the `ON`/`OFF` payload, write back only if the result differs. On this unit
+  that is the `35` (on) ↔ `33` (off) transition, but the implementation toggles the
+  bit rather than writing the literals, so the other flags (self-use bit 0,
+  grid-charge bit 5) are never clobbered. The switch's `state_on`/`state_off` and
+  `payload_on`/`payload_off` are `"ON"`/`"OFF"`.
+- **RTC button** (REQ-HA-13) — see the RTC section below.
+
+### State document additions
+
+Three fields are added to the **same** retained `~/state` JSON document (not a
+separate topic) so the controls read their current value back through the existing
+`value_template {{ value_json.<key> }}` mechanism, exactly as the sensors do. Each
+control's discovery payload therefore sets `state_topic: ~/state`.
+
+| Field | Type | Source |
+| --- | --- | --- |
+| `set_charge_current` | float (amps) | `43141 ÷ 10` |
+| `set_discharge_current` | float (amps) | `43142 ÷ 10` |
+| `optimal_income` | string `"ON"`/`"OFF"` | bit 1 of `43110` |
+
+The values come from **one extra holding-bank read per poll**: a single
+`ReadHolding(43110, 33)` — one fc03 frame covers `43110` plus `43141`/`43142`, and
+`33` registers is well under the 125-register-per-frame cap (REQ-SD-02). The
+read-only 33-entity state contract is unchanged; these three fields extend the
+`State` DTO, and `BuildState` stays pure (the holding words are decoded and passed
+in, as with `rtc_drift`).
+
+### Server-side validation
+
+Every inbound command is validated before the guard runs (REQ-HA-12); a bad
+command is **logged and dropped** — it never crashes the manager and never reaches
+fc06:
+
+- **Amp numbers** are parsed as float. `NaN`, unparseable, or out-of-range values
+  are **rejected**; an in-band-but-high value is **clamped to 0–60 A**
+  (`ClampHAChargeAmps`). Non-numeric payloads are rejected outright.
+- **The switch** rejects anything that is not exactly `"ON"` or `"OFF"`.
+
+### RTC sync button
+
+`rtc_sync` is a **manual button only** this phase (REQ-HA-13). A press triggers a
+**guarded write of the six RTC holding registers `43000–43005`** to the current
+wall-clock time (naive local datetime — the inverter has no timezone register, per
+Phase 0). The guard applies **per register**: read the current six words, compare
+component-by-component, and write via fc06 **only the registers that differ**
+(skips logged at `info`, mismatched re-reads logged as non-fatal errors, as for
+every guarded write).
+
+**Periodic / threshold-gated RTC auto-sync is explicitly DEFERRED to the Phase 6
+scheduler** (`internal/scheduler`) — this phase ships the manual button only. The
+drift-threshold logic flagged in `docs/phase0/findings.md` belongs there, not here.
+
+### Kill-switch — `CONTROLS_ENABLED` (Ruling R1)
+
+Config exposes `CONTROLS_ENABLED` (bool, **default `true`**). **RULING R1 —
+disabled behaviour is exactly:** when `CONTROLS_ENABLED=false` the manager
+
+- **OMITS the four command entities from discovery** (it does **not**
+  publish-them-unavailable — the entities simply never appear), and
+- does **not** subscribe to the command topic `<base>/+/set`.
+
+The three `~/state` setpoint fields **may still be published** in the disabled case
+— they are read-only telemetry and harmless without their controls.
