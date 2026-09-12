@@ -56,6 +56,23 @@ func TestDrift(t *testing.T) {
 	}
 }
 
+func TestRTCWriteRegisters(t *testing.T) {
+	tm := time.Date(2026, time.September, 12, 18, 30, 45, 0, time.Local)
+	wantValues := EncodeRTC(tm)
+
+	got := RTCWriteRegisters(tm)
+
+	for i, reg := range got {
+		wantAddr := RegRTCSet + i
+		if reg.Addr != wantAddr {
+			t.Errorf("RTCWriteRegisters[%d].Addr = %d, want %d", i, reg.Addr, wantAddr)
+		}
+		if reg.Value != wantValues[i] {
+			t.Errorf("RTCWriteRegisters[%d].Value = %d, want %d", i, reg.Value, wantValues[i])
+		}
+	}
+}
+
 func TestDecodeRTCMissing(t *testing.T) {
 	s := Snapshot{{Base: RegRTCRead, Regs: []uint16{26, 9, 8}}} // only 3 of 6 regs
 	if _, err := DecodeRTC(s, RegRTCRead); err == nil {

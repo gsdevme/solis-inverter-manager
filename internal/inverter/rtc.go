@@ -53,3 +53,21 @@ func EncodeRTC(t time.Time) [rtcRegisterCount]uint16 {
 func Drift(rtc, now time.Time) time.Duration {
 	return rtc.Sub(now)
 }
+
+// RTCRegister is one (address, value) pair for a guarded RTC block write.
+type RTCRegister struct {
+	Addr  int
+	Value uint16
+}
+
+// RTCWriteRegisters expands the six RTC holding registers (RegRTCSet..+5)
+// for time t into address/value pairs, so a guarded write loop can compare
+// and write each register independently. It reuses EncodeRTC for the values.
+func RTCWriteRegisters(t time.Time) [rtcRegisterCount]RTCRegister {
+	values := EncodeRTC(t)
+	var regs [rtcRegisterCount]RTCRegister
+	for i, v := range values {
+		regs[i] = RTCRegister{Addr: RegRTCSet + i, Value: v}
+	}
+	return regs
+}
