@@ -137,6 +137,9 @@ func (h *Handler) setOptimalIncome(ctx context.Context, key string, payload []by
 	}
 	cur, err := readOne(ctx, h.rw, inverter.RegWorkMode)
 	if err != nil {
+		// Return "routed" (true) even though no write happened: the command was
+		// valid and touched the inverter (one read), so refresh should still fire
+		// — matching "refresh after any routed action".
 		h.log.Error("controls: work-mode read failed", "key", key, "err", err)
 		return true
 	}
@@ -165,7 +168,7 @@ func (h *Handler) guardOne(ctx context.Context, key string, addr int, value uint
 	case err != nil:
 		h.log.Error("controls: guarded write failed", "key", key, "addr", addr, "desired", value, "err", err)
 	case res.Skipped:
-		h.log.Info("write skipped (no-op)", "key", key, "addr", addr, "value", value)
+		h.log.Info("controls: write skipped (no-op)", "key", key, "addr", addr, "value", value)
 	default:
 		h.log.Info("controls: write confirmed", "key", key, "addr", addr, "old", res.Old, "new", res.New)
 	}

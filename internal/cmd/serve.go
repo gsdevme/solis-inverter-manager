@@ -94,19 +94,27 @@ func runServe(ctx context.Context) error {
 	cache := &lastState{}
 
 	// readState reads telemetry and the writable-control setpoints through the
-	// serialized wrapper, caches both, and returns them. A setpoints read failure
-	// is non-fatal: it logs and falls back to zero-value setpoints rather than
-	// dropping the telemetry publish. ok is false only when telemetry itself
-	// could not be read.
+	// serialized wrapper, caches both, and returns them. Setpoints are read in a
+	// separate holding frame from telemetry, so a setpoints-read failure is
+	// non-fatal and MUST NOT blank the published control state: on failure we
+	// reuse the last-known setpoints (truth over optimism) rather than folding
+	// zeros (0 A / OFF) into the state doc, and telemetry is published regardless.
+	// ok is false only when telemetry itself could not be read. On the very first
+	// poll there is no last-known value, so zero is the acceptable fallback.
 	readState := func(ctx context.Context) (inverter.Telemetry, homeassistant.Setpoints, bool) {
 		tel, err := publisher.Collect(ctx, wrapper)
 		if err != nil {
 			logger.Warn("poll failed", "err", err)
 			return inverter.Telemetry{}, homeassistant.Setpoints{}, false
 		}
-		var haSp homeassistant.Setpoints
+		// Snapshot the last-known setpoints before the sidecar read; the lock is
+		// released before ReadSetpoints so cache.mu is never held across a Modbus
+		// frame.
+		cache.mu.Lock()
+		haSp := cache.sp
+		cache.mu.Unlock()
 		if sp, err := controls.ReadSetpoints(ctx, wrapper); err != nil {
-			logger.Warn("read setpoints failed", "err", err)
+			logger.Warn("read setpoints failed; reusing last-known setpoints", "err", err)
 		} else {
 			haSp = toHASetpoints(sp)
 		}
@@ -196,7 +204,10 @@ func runServe(ctx context.Context) error {
 			// SetOnMessage installs a SYNCHRONOUS handler: the mqtt client invokes
 			// it inline (no goroutine), which serializes command dispatch and keeps
 			// the read-before-write guard's read/compare/write free of a TOCTOU
-			// race against a concurrent command.
+			// race against a concurrent command. Because handler+refresh run inline
+			// on paho's single publish-routing goroutine, a slow/hung sidecar delays
+			// this command's PUBACK and serializes subsequent commands — acceptable
+			// this phase; Phase 6's scheduler moves it behind an actor/queue.
 			mc.SetOnMessage(handler.OnMessage)
 		}
 
