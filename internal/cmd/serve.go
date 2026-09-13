@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"sync"
 	"sync/atomic"
 	"time"
 
@@ -17,6 +16,7 @@ import (
 	"github.com/gsdevme/solis-inverter-manager/internal/inverter"
 	"github.com/gsdevme/solis-inverter-manager/internal/mqtt"
 	"github.com/gsdevme/solis-inverter-manager/internal/publisher"
+	"github.com/gsdevme/solis-inverter-manager/internal/scheduler"
 	"github.com/gsdevme/solis-inverter-manager/internal/server"
 	"github.com/gsdevme/solis-inverter-manager/internal/sidecarclient"
 )
@@ -29,14 +29,19 @@ var serveCmd = &cobra.Command{
 	},
 }
 
-// lastState caches the most recent successful telemetry poll. It is written by
-// the poll ticker goroutine and read by the MQTT reconnect hook (which runs on a
-// transport goroutine), so every access is guarded by the mutex.
-type lastState struct {
-	mu   sync.Mutex
-	tel  inverter.Telemetry
-	sp   homeassistant.Setpoints
-	have bool
+// readerFunc adapts a closure to scheduler.StateReader so serve can hand the
+// existing readState closure to the scheduler without a wrapper struct.
+type readerFunc func(context.Context) (inverter.Telemetry, homeassistant.Setpoints, error)
+
+func (f readerFunc) Read(ctx context.Context) (inverter.Telemetry, homeassistant.Setpoints, error) {
+	return f(ctx)
+}
+
+// publisherFunc adapts a closure to scheduler.StatePublisher.
+type publisherFunc func(context.Context, inverter.Telemetry, homeassistant.Setpoints) error
+
+func (f publisherFunc) PublishState(ctx context.Context, tel inverter.Telemetry, sp homeassistant.Setpoints) error {
+	return f(ctx, tel, sp)
 }
 
 // toHASetpoints maps the controls-package setpoints (read from the holding bank)
@@ -62,7 +67,7 @@ func runServe(ctx context.Context) error {
 	}
 
 	// Status/health server listens immediately so probes work during init.
-	// Readiness starts false and is flipped ready after the first successful poll.
+	// Readiness starts false; the scheduler drives it via MarkSuccess/MarkFailure.
 	status := server.New(server.Config{
 		FailureThreshold: cfg.FailureThreshold,
 		PollInterval:     cfg.PollInterval,
@@ -82,8 +87,7 @@ func runServe(ctx context.Context) error {
 	// wrapper serializes every register call (input reads via publisher.Collect,
 	// holding read/writes via the command handler) on one mutex, because the
 	// sidecar's single socket cannot service concurrent Modbus transactions. The
-	// poll goroutine and the command-handler goroutine both use this wrapper — not
-	// the raw client.
+	// scheduler's apiMu serializes whole poll/command cycles on top of it.
 	wrapper := controls.NewLocking(client)
 	haCfg := homeassistant.Config{
 		DiscoveryPrefix: cfg.HADiscoveryPrefix,
@@ -91,54 +95,81 @@ func runServe(ctx context.Context) error {
 		Serial:          cfg.InverterSerial,
 		ControlsEnabled: cfg.ControlsEnabled,
 	}
-	cache := &lastState{}
 
-	// readState reads telemetry and the writable-control setpoints through the
-	// serialized wrapper, caches both, and returns them. Setpoints are read in a
-	// separate holding frame from telemetry, so a setpoints-read failure is
-	// non-fatal and MUST NOT blank the published control state: on failure we
-	// reuse the last-known setpoints (truth over optimism) rather than folding
-	// zeros (0 A / OFF) into the state doc, and telemetry is published regardless.
-	// ok is false only when telemetry itself could not be read. On the very first
-	// poll there is no last-known value, so zero is the acceptable fallback.
-	readState := func(ctx context.Context) (inverter.Telemetry, homeassistant.Setpoints, bool) {
+	// now is the single clock shared by the scheduler and the controls handler
+	// (RTC sync), so tests can inject one fake clock across both.
+	now := time.Now
+
+	// svcPtr holds the publisher once MQTT is connected. It is stored by the main
+	// goroutine after Connect and loaded by the reconnect hook, the scheduler's
+	// StatePublisher adapter and the command refresh, so the hand-off is
+	// synchronized through an atomic pointer (the transport goroutine may fire
+	// OnConnectionUp as soon as the connection comes up).
+	var (
+		mc     *mqtt.Client
+		svcPtr atomic.Pointer[publisher.Service]
+		sched  *scheduler.Scheduler
+	)
+
+	// readState is the scheduler's StateReader: it reads telemetry and the
+	// writable-control setpoints through the serialized wrapper. Telemetry and
+	// setpoints are read in separate holding frames, so a setpoints-read failure is
+	// non-fatal and MUST NOT blank the published control state: on failure we reuse
+	// the last-known setpoints from the scheduler's cache (truth over optimism)
+	// rather than folding zeros (0 A / OFF) into the state doc. It returns an error
+	// only when telemetry itself could not be read, so the scheduler backs off and
+	// retries. On the very first poll there is no last-known value, so zero is the
+	// acceptable fallback.
+	readState := func(ctx context.Context) (inverter.Telemetry, homeassistant.Setpoints, error) {
 		tel, err := publisher.Collect(ctx, wrapper)
 		if err != nil {
-			logger.Warn("poll failed", "err", err)
-			return inverter.Telemetry{}, homeassistant.Setpoints{}, false
+			return inverter.Telemetry{}, homeassistant.Setpoints{}, err
 		}
-		// Snapshot the last-known setpoints before the sidecar read; the lock is
-		// released before ReadSetpoints so cache.mu is never held across a Modbus
-		// frame.
-		cache.mu.Lock()
-		haSp := cache.sp
-		cache.mu.Unlock()
+		_, haSp, _ := sched.LastState()
 		if sp, err := controls.ReadSetpoints(ctx, wrapper); err != nil {
 			logger.Warn("read setpoints failed; reusing last-known setpoints", "err", err)
 		} else {
 			haSp = toHASetpoints(sp)
 		}
-		cache.mu.Lock()
-		cache.tel, cache.sp, cache.have = tel, haSp, true
-		cache.mu.Unlock()
-		return tel, haSp, true
+		return tel, haSp, nil
 	}
 
-	// MQTT is required in live mode and optional in mock. When a broker URL is
-	// configured, connect and publish HA discovery + availability eagerly; the
-	// same republish hook re-runs on every reconnect. When it is not, the pipeline
-	// still polls and logs decoded telemetry so the mock run stays observable.
-	// svcPtr holds the publisher once MQTT is connected. It is stored by the main
-	// goroutine after Connect and loaded by the reconnect hook and the poll ticker
-	// goroutine, so the hand-off is synchronized through an atomic pointer rather
-	// than a plain assignment (which would race with the transport goroutine that
-	// fires OnConnectionUp as soon as the connection comes up).
+	// publishState is the scheduler's StatePublisher: it publishes the shared state
+	// document once MQTT is connected, and otherwise (mock, no broker) logs decoded
+	// telemetry so the pipeline stays observable without a broker.
+	publishState := func(ctx context.Context, tel inverter.Telemetry, haSp homeassistant.Setpoints) error {
+		svc := svcPtr.Load()
+		if svc == nil {
+			logger.Info("telemetry",
+				"time", tel.Time,
+				"battery_soc", tel.Battery.SOCPercent,
+				"battery_power_w", tel.Battery.PowerW,
+				"pv_power_w", tel.PV.TotalPowerW,
+				"grid_power_w", tel.Grid.PowerW,
+				"set_charge_current", haSp.SetChargeCurrent,
+				"set_discharge_current", haSp.SetDischargeCurrent,
+				"optimal_income", haSp.OptimalIncome,
+			)
+			return nil
+		}
+		return svc.PublishState(ctx, tel, haSp)
+	}
+
+	// rtcSyncer and commander are the controls seams, left as nil interfaces when
+	// controls are disabled (no handler) so the scheduler's nil-checks hold — a
+	// typed-nil *controls.Handler would defeat them.
 	var (
-		mc     *mqtt.Client
-		svcPtr atomic.Pointer[publisher.Service]
+		rtcSyncer scheduler.RTCSyncer
+		commander scheduler.Commander
 	)
+
+	// MQTT is required in live mode and optional in mock. When a broker URL is
+	// configured, connect and publish HA discovery + availability eagerly; the same
+	// republish hook re-runs on every reconnect. When it is not, the pipeline still
+	// polls and logs decoded telemetry so the mock run stays observable.
+	var commandTopic string
 	if cfg.MQTTBrokerURL != "" {
-		commandTopic := haCfg.BaseTopic() + "/+/set"
+		commandTopic = haCfg.BaseTopic() + "/+/set"
 		republish := func(ctx context.Context) {
 			svc := svcPtr.Load()
 			if svc == nil {
@@ -150,12 +181,13 @@ func runServe(ctx context.Context) error {
 			if err := svc.PublishAvailability(ctx, true); err != nil {
 				logger.Warn("republish availability failed", "err", err)
 			}
-			cache.mu.Lock()
-			tel, sp, have := cache.tel, cache.sp, cache.have
-			cache.mu.Unlock()
-			if have {
-				if err := svc.PublishState(ctx, tel, sp); err != nil {
-					logger.Warn("republish state failed", "err", err)
+			// The scheduler owns the last-good cache; it may not exist yet on the
+			// very first OnConnectionUp (fired during Connect, before sched is built).
+			if sched != nil {
+				if tel, sp, have := sched.LastState(); have {
+					if err := svc.PublishState(ctx, tel, sp); err != nil {
+						logger.Warn("republish state failed", "err", err)
+					}
 				}
 			}
 			// Re-subscribe on every reconnect (idempotent, like discovery) so the
@@ -182,16 +214,19 @@ func runServe(ctx context.Context) error {
 		svcPtr.Store(publisher.New(mc, haCfg))
 		mc.SetOnConnectionUp(republish)
 
-		// Writable controls: install the command handler and subscribe to the
-		// command topic only when CONTROLS_ENABLED. When disabled, the 4 command
-		// entities are already omitted from discovery (haCfg.ControlsEnabled=false,
-		// ruling R1), so there is nothing to subscribe to and no handler is set.
+		// Writable controls: build the command handler only when CONTROLS_ENABLED.
+		// When disabled, the 4 command entities are already omitted from discovery
+		// (haCfg.ControlsEnabled=false, ruling R1), so there is nothing to subscribe
+		// to and no handler is set — leaving rtcSyncer/commander nil.
 		if cfg.ControlsEnabled {
 			// refresh re-reads telemetry+setpoints through the wrapper and
-			// republishes state after any command that touched the inverter.
+			// republishes state after any command that touched the inverter, then
+			// updates the scheduler cache so a reconnect in the window before the
+			// next poll republishes post-command values rather than stale ones.
 			refresh := func(ctx context.Context) {
-				tel, haSp, ok := readState(ctx)
-				if !ok {
+				tel, haSp, err := readState(ctx)
+				if err != nil {
+					logger.Warn("controls refresh: read failed", "err", err)
 					return
 				}
 				if svc := svcPtr.Load(); svc != nil {
@@ -199,20 +234,38 @@ func runServe(ctx context.Context) error {
 						logger.Warn("controls refresh: publish state failed", "err", err)
 					}
 				}
+				sched.RememberState(tel, haSp)
 			}
-			handler := controls.NewHandler(wrapper, logger, true, refresh)
-			// SetOnMessage installs a SYNCHRONOUS handler: the mqtt client invokes
-			// it inline (no goroutine), which serializes command dispatch and keeps
-			// the read-before-write guard's read/compare/write free of a TOCTOU
-			// race against a concurrent command. Because handler+refresh run inline
-			// on paho's single publish-routing goroutine, a slow/hung sidecar delays
-			// this command's PUBACK and serializes subsequent commands — acceptable
-			// this phase; Phase 6's scheduler moves it behind an actor/queue.
-			mc.SetOnMessage(handler.OnMessage)
+			handler := controls.NewHandler(wrapper, logger, true, refresh, controls.WithNow(now))
+			rtcSyncer = handler
+			commander = handler
 		}
+	}
 
-		// Eager publish once after connect, in case the first connection-up fired
-		// before svcPtr was stored. Transient publish errors are logged, not fatal.
+	if cfg.RTCSyncEnabled && !cfg.ControlsEnabled {
+		logger.Warn("RTC_SYNC_ENABLED is true but CONTROLS_ENABLED is false; RTC auto-sync is disabled because it requires the write path")
+	}
+
+	sched = scheduler.New(readerFunc(readState), publisherFunc(publishState), status, rtcSyncer, commander, scheduler.Config{
+		PollInterval:      cfg.PollInterval,
+		MaxRetries:        cfg.PollMaxRetries,
+		RTCSyncEnabled:    cfg.RTCSyncEnabled,
+		RTCDriftThreshold: cfg.RTCDriftThreshold,
+		Logger:            logger,
+		Now:               now,
+	})
+
+	// Command dispatch runs through the scheduler (ApplyCommand takes apiMu), so a
+	// guarded write + re-read + refresh is atomic against a poll. Installed after
+	// sched exists and before the command-topic subscribe, so no inbound command is
+	// dropped for want of a handler.
+	if mc != nil && cfg.ControlsEnabled {
+		mc.SetOnMessage(sched.ApplyCommand)
+	}
+
+	// Eager publish once after connect, in case the first connection-up fired before
+	// svcPtr was stored. Transient publish errors are logged, not fatal.
+	if mc != nil {
 		svc := svcPtr.Load()
 		if err := svc.PublishDiscovery(ctx); err != nil {
 			logger.Warn("publish discovery failed", "err", err)
@@ -227,49 +280,10 @@ func runServe(ctx context.Context) error {
 		}
 	}
 
-	var readyOnce sync.Once
-	pollDone := make(chan struct{})
+	schedDone := make(chan struct{})
 	go func() {
-		defer close(pollDone)
-		// INTERIM poll ticker: a fixed-interval placeholder with no backoff,
-		// replaced by internal/scheduler in Phase 6.
-		ticker := time.NewTicker(cfg.PollInterval)
-		defer ticker.Stop()
-
-		poll := func() {
-			tel, haSp, ok := readState(ctx)
-			if !ok {
-				return
-			}
-
-			if svc := svcPtr.Load(); svc != nil {
-				if err := svc.PublishState(ctx, tel, haSp); err != nil {
-					logger.Warn("publish state failed", "err", err)
-				}
-			} else {
-				logger.Info("telemetry",
-					"time", tel.Time,
-					"battery_soc", tel.Battery.SOCPercent,
-					"battery_power_w", tel.Battery.PowerW,
-					"pv_power_w", tel.PV.TotalPowerW,
-					"grid_power_w", tel.Grid.PowerW,
-					"set_charge_current", haSp.SetChargeCurrent,
-					"set_discharge_current", haSp.SetDischargeCurrent,
-					"optimal_income", haSp.OptimalIncome,
-				)
-			}
-			readyOnce.Do(func() { status.SetReady(true) })
-		}
-
-		poll()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				poll()
-			}
-		}
+		defer close(schedDone)
+		sched.Run(ctx)
 	}()
 
 	logger.Info("manager running")
@@ -280,12 +294,11 @@ func runServe(ctx context.Context) error {
 	}
 	logger.Info("shutting down")
 
-	// Graceful shutdown: drain the poll goroutine FIRST so no in-flight poll can
-	// use the client concurrently with Disconnect, then publish a retained
-	// "offline" and disconnect the broker cleanly before stopping the health
-	// server. ctx is already cancelled, so use a fresh short-lived context for
-	// these final publishes.
-	<-pollDone
+	// Graceful shutdown: drain the scheduler FIRST so no in-flight poll/command can
+	// use the client concurrently with Disconnect, then publish a retained "offline"
+	// and disconnect the broker cleanly before stopping the health server. ctx is
+	// already cancelled, so use a fresh short-lived context for these final publishes.
+	<-schedDone
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if mc != nil {

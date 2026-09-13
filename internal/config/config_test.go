@@ -3,6 +3,7 @@ package config
 import (
 	"strings"
 	"testing"
+	"time"
 )
 
 // setEnv sets the minimum required vars for MODE=live plus any overrides.
@@ -35,6 +36,15 @@ func TestLoadDefaults(t *testing.T) {
 	}
 	if c.FailureThreshold != 3 {
 		t.Errorf("failure threshold = %d, want 3", c.FailureThreshold)
+	}
+	if c.PollMaxRetries != 3 {
+		t.Errorf("poll max retries = %d, want 3", c.PollMaxRetries)
+	}
+	if c.RTCSyncEnabled {
+		t.Errorf("rtc sync enabled = true, want false by default")
+	}
+	if c.RTCDriftThreshold != 60*time.Second {
+		t.Errorf("rtc drift threshold = %s, want 60s", c.RTCDriftThreshold)
 	}
 	if c.InverterPort != 8899 {
 		t.Errorf("inverter port = %d, want 8899", c.InverterPort)
@@ -99,6 +109,27 @@ func TestBadFailureThreshold(t *testing.T) {
 	setEnv(t, map[string]string{"FAILURE_THRESHOLD": "0"})
 	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "FAILURE_THRESHOLD") {
 		t.Fatalf("expected FAILURE_THRESHOLD error, got %v", err)
+	}
+}
+
+func TestRTCSyncKnobs(t *testing.T) {
+	setEnv(t, map[string]string{"RTC_SYNC_ENABLED": "true", "RTC_DRIFT_THRESHOLD": "30s"})
+	c, err := Load()
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if !c.RTCSyncEnabled {
+		t.Errorf("rtc sync enabled = false, want true")
+	}
+	if c.RTCDriftThreshold != 30*time.Second {
+		t.Errorf("rtc drift threshold = %s, want 30s", c.RTCDriftThreshold)
+	}
+}
+
+func TestBadRTCDriftThreshold(t *testing.T) {
+	setEnv(t, map[string]string{"RTC_DRIFT_THRESHOLD": "0s"})
+	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "RTC_DRIFT_THRESHOLD") {
+		t.Fatalf("expected RTC_DRIFT_THRESHOLD error, got %v", err)
 	}
 }
 

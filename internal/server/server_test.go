@@ -23,6 +23,54 @@ func TestReadinessFlag(t *testing.T) {
 	}
 }
 
+func TestMarkSuccessFlipsReady(t *testing.T) {
+	s := New(Config{FailureThreshold: 3})
+	if s.Ready() {
+		t.Fatal("should start not ready")
+	}
+	s.MarkSuccess()
+	if !s.Ready() {
+		t.Fatal("should be ready after MarkSuccess")
+	}
+}
+
+func TestMarkFailureThresholdFlipsNotReady(t *testing.T) {
+	s := New(Config{FailureThreshold: 3})
+	s.MarkSuccess()
+
+	// Failures below the threshold hold the last-good ready state.
+	s.MarkFailure()
+	s.MarkFailure()
+	if !s.Ready() {
+		t.Fatalf("should stay ready with 2 < 3 consecutive failures")
+	}
+	// The third consecutive failure crosses the threshold.
+	s.MarkFailure()
+	if s.Ready() {
+		t.Fatalf("should be not ready after 3 consecutive failures")
+	}
+
+	// A success resets the counter, so the threshold restarts from zero.
+	s.MarkSuccess()
+	if !s.Ready() {
+		t.Fatalf("should be ready again after MarkSuccess")
+	}
+	s.MarkFailure()
+	s.MarkFailure()
+	if !s.Ready() {
+		t.Fatalf("counter should have reset on success; 2 < 3 must stay ready")
+	}
+}
+
+func TestThresholdBelowOneTreatedAsOne(t *testing.T) {
+	s := New(Config{FailureThreshold: 0})
+	s.MarkSuccess()
+	s.MarkFailure()
+	if s.Ready() {
+		t.Fatalf("threshold clamped to 1: a single failure must flip not-ready")
+	}
+}
+
 func TestProbes(t *testing.T) {
 	s := New(Config{FailureThreshold: 1})
 	srv := httptest.NewServer(s.Handler())

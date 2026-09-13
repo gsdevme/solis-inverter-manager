@@ -21,6 +21,8 @@ holds real secrets.
 | `POLL_INTERVAL` | `60s` | no | Poll cadence (`time.ParseDuration`). Floor `5s`. |
 | `POLL_MAX_RETRIES` | `3` | no | Transient-error retries per poll before it counts as failed. Must be `>= 0`. |
 | `FAILURE_THRESHOLD` | `3` | no | Consecutive poll failures before `/readyz` flips not-ready. Must be `>= 1`. |
+| `RTC_SYNC_ENABLED` | `false` | no | Opt-in periodic RTC auto-sync folded into the poll. When `true`, a poll whose decoded clock drifts by more than `RTC_DRIFT_THRESHOLD` runs the guarded `43000–43005` write. |
+| `RTC_DRIFT_THRESHOLD` | `60s` | no | Absolute clock-drift threshold above which RTC auto-sync writes (`time.ParseDuration`). Must be `> 0`. Only consulted when `RTC_SYNC_ENABLED=true`. |
 | `MQTT_BROKER_URL` | — | if `live` | e.g. `mqtt://mosquitto:1883` or `tls://host:8883`. |
 | `MQTT_USERNAME` | — | no | MQTT auth username. |
 | `MQTT_PASSWORD` | — | no | MQTT auth password. **Secret — never logged.** |
@@ -38,7 +40,8 @@ holds real secrets.
 - `MODE` must be `live` or `mock`. In `mock`, no live/MQTT values are required. In
   `live`, `INVERTER_IP`, `INVERTER_SERIAL` and `MQTT_BROKER_URL` are required.
 - `POLL_INTERVAL` below the `5s` floor is rejected; `INVERTER_PORT` in `1–65535`;
-  `INVERTER_SOCKET_TIMEOUT > 0`; `FAILURE_THRESHOLD >= 1`; `POLL_MAX_RETRIES >= 0`.
+  `INVERTER_SOCKET_TIMEOUT > 0`; `FAILURE_THRESHOLD >= 1`; `POLL_MAX_RETRIES >= 0`;
+  `RTC_DRIFT_THRESHOLD > 0`.
 - **Secrets** (`INVERTER_SERIAL`, `MQTT_PASSWORD`) are never logged: the config's
   `String()` and `LogValue()` replace them with a redaction placeholder.
 
@@ -52,5 +55,9 @@ Modbus write (fc06) when the desired value differs**. Holding registers are
 **flash-backed**, so needless writes cause **flash wear**. This governs every
 setpoint — timed charge current `43141`, timed discharge current `43142`, work-mode
 `43110` — and any RTC auto-sync, which may only rewrite `43000–43005` when clock
-**drift exceeds a threshold**. TODO: a future `RTC_SYNC_*` / write-tolerance config
-knob may be added when the writable-controls phase lands.
+**drift exceeds a threshold**. RTC auto-sync is opt-in and threshold-gated:
+`RTC_SYNC_ENABLED` (default `false`) turns it on and `RTC_DRIFT_THRESHOLD`
+(default `60s`) sets the drift above which the guarded write fires. The write itself
+runs under the same read-before-write guard, so an already-correct register is
+skipped and the sync is self-limiting (post-sync drift ≈ 0). See
+`04-polling-scheduling.md` for how the sync folds into the poll.

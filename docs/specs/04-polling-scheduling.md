@@ -1,27 +1,88 @@
 # 04 — Polling & scheduling
 
-> **Status: skeleton.** Full content authored in a later phase.
+`internal/scheduler` owns the poll loop. It is modelled on the sibling services
+(`unifi-ha-presence-mqtt`, `hyundai-bluelink-mqtt`): a single goroutine with a
+ticker, an immediate first poll, an injectable clock for `testing/synctest`, and a
+`HealthReporter` seam into `internal/server`.
 
-`internal/scheduler` owns the poll loop.
+## Loop
 
-## Loop (TODO)
+- Poll at `POLL_INTERVAL` (default `60s`, floor `5s`), with an **immediate first
+  poll** before the ticker starts.
+- Ticks are **serialised** on a single mutex (`apiMu`) so two polls never overlap —
+  the sidecar's single socket can only carry one Modbus frame at a time.
+- The loop is a **single goroutine**. RTC auto-sync is folded into the poll (below),
+  so there is no second goroutine.
+- `Run(ctx)` blocks until `ctx` is cancelled; `PollNow(ctx)` runs exactly one cycle
+  and is used by the acceptance suite.
 
-TODO: poll at `POLL_INTERVAL` (default 60s, floor 5s), immediate first run,
-serialised ticks (never overlap).
+## Per tick
 
-## Per tick (TODO)
+1. Read telemetry + writable-control setpoints via the sidecar (through the
+   `Locking` wrapper), decode (`internal/inverter`). Telemetry and setpoints are read
+   in **separate holding frames**: a setpoints sub-read failure is non-fatal and
+   reuses the **last-known** setpoints rather than blanking the control state; only a
+   telemetry read failure fails the poll.
+2. On success: cache the last-good `(telemetry, setpoints)`, publish the retained
+   state document to MQTT (or, with no broker configured, log decoded telemetry), and
+   `MarkSuccess()`.
+3. On failure (telemetry read after retries, or a publish error): `MarkFailure()`.
+   The cache is **not** cleared, so Home Assistant keeps showing the last-good values.
 
-TODO: read register blocks via the sidecar -> decode (`internal/inverter`) ->
-publish state to MQTT -> report success/failure to the health server
-(`server.SetReady` after the first success; not-ready after `FAILURE_THRESHOLD`
-consecutive failures).
+## Retries & backoff
 
-## Writes (TODO)
+- A telemetry read is retried up to `POLL_MAX_RETRIES` times (default `3`) with
+  **exponential backoff** — `1s, 2s, 4s, …` — before the poll counts as failed.
+- Backoff waits honour `ctx` cancellation and use an injectable `After` so
+  `testing/synctest` drives them on a fake clock.
+- A transient failure that a retry absorbs never reaches `MarkFailure()`, so a single
+  flaky read does not flip readiness.
 
-TODO: apply any pending setpoint writes under the READ-BEFORE-WRITE write-guard (see
-`03-mqtt-ha-discovery.md`) — read current value, skip if unchanged.
+## Readiness (health reporting)
 
-## Retries & testability (TODO)
+- `MarkSuccess()` flips `/readyz` to **ready** (`200`) and resets the consecutive-
+  failure counter.
+- `MarkFailure()` increments the counter; readiness flips to **not-ready** (`503`)
+  once it reaches `FAILURE_THRESHOLD` (default `3`) **consecutive** failures. Failures
+  below the threshold hold the current readiness, so a brief outage does not blank HA.
+- The counter lives in `internal/server`; the scheduler only reports outcomes.
 
-TODO: retry transient errors up to `POLL_MAX_RETRIES` with backoff; injectable
-`Now`/`After` for deterministic `testing/synctest` tests.
+## Command serialization (mutex-on-demand)
+
+Inbound MQTT commands are dispatched through `Scheduler.ApplyCommand`, which takes
+the **same `apiMu`** the poll uses. A whole guarded write + re-read + refresh is
+therefore **atomic against a poll** — never interleaved on the shared sidecar socket.
+This is the "one in-flight request" decision: on-demand mutex acquisition rather than
+an actor/queue. paho invokes `ApplyCommand` on its publish-routing goroutine; while a
+poll holds `apiMu`, the command waits, and vice versa.
+
+## Writes (read-before-write)
+
+Every write the scheduler path issues — setpoints and RTC — goes through the
+READ-BEFORE-WRITE guard (`internal/controls`, see `03-mqtt-ha-discovery.md`): read the
+current value, issue `fc06` only when it differs, then re-read to confirm. Holding
+registers are flash-backed, so a no-op write is skipped.
+
+## RTC auto-sync (opt-in, threshold-gated)
+
+Periodic clock correction is **folded into the poll**, not a separate schedule:
+
+- Off by default. `RTC_SYNC_ENABLED=true` turns it on; `RTC_DRIFT_THRESHOLD`
+  (default `60s`, must be `> 0`) is the drift above which it acts.
+- Each poll already decodes the inverter RTC (input `33022–33027`). When enabled and
+  `|Drift(rtc, now)| > RTC_DRIFT_THRESHOLD`, the scheduler runs the guarded
+  `43000–43005` write (still under `apiMu`, so it never overlaps another frame).
+- Self-limiting: after a sync the drift is ≈ 0, so it will not fire again until the
+  clock drifts anew. The guard skips already-correct registers, honouring the
+  flash-wear guardrail.
+- Requires the write path: it is disabled (with a startup warning) when
+  `CONTROLS_ENABLED=false`.
+
+## Testability
+
+- `Now func() time.Time` and `After func(time.Duration) <-chan time.Time` are
+  injected (default `time.Now` / `time.After`). The scheduler and the controls
+  handler (RTC clock) share one `Now`, so a fake clock covers both.
+- Unit tests use `testing/synctest` for the timed loop and backoff; the godog
+  acceptance suite (`features/polling.feature`) drives `PollNow` with an immediate
+  fake backoff clock to assert retry, the retained cache, and readiness transitions.

@@ -44,6 +44,13 @@ type Config struct {
 	PollMaxRetries   int
 	FailureThreshold int
 
+	// RTC auto-sync. Opt-in (default off) periodic clock correction folded into the
+	// poll: when enabled and the inverter clock drifts by more than
+	// RTCDriftThreshold, the scheduler runs the guarded 43000–43005 write. Off by
+	// default so the flash-wear guardrail is never touched without an explicit opt-in.
+	RTCSyncEnabled    bool
+	RTCDriftThreshold time.Duration
+
 	// MQTT / HA
 	MQTTBrokerURL     string
 	MQTTUsername      string
@@ -148,6 +155,20 @@ func Load() (*Config, error) {
 	}
 	c.ControlsEnabled = controlsEnabled
 
+	rtcSyncEnabled, err := parseBool("RTC_SYNC_ENABLED", false)
+	if err != nil {
+		errs = append(errs, err)
+	}
+	c.RTCSyncEnabled = rtcSyncEnabled
+
+	rtcDrift, err := parseDuration("RTC_DRIFT_THRESHOLD", 60*time.Second)
+	if err != nil {
+		errs = append(errs, err)
+	} else if rtcDrift <= 0 {
+		errs = append(errs, errors.New("RTC_DRIFT_THRESHOLD must be > 0"))
+	}
+	c.RTCDriftThreshold = rtcDrift
+
 	if len(errs) > 0 {
 		return nil, errors.Join(errs...)
 	}
@@ -167,10 +188,12 @@ func (c *Config) String() string {
 		password = redacted
 	}
 	return fmt.Sprintf("Config{mode=%s inverterIP=%s inverterSerial=%s inverterPort=%d "+
-		"socketTimeout=%s sidecar=%s poll=%s maxRetries=%d failThreshold=%d controlsEnabled=%t "+
+		"socketTimeout=%s sidecar=%s poll=%s maxRetries=%d failThreshold=%d "+
+		"rtcSyncEnabled=%t rtcDriftThreshold=%s controlsEnabled=%t "+
 		"broker=%s user=%s password=%s clientID=%s topicPrefix=%s haPrefix=%s health=%s log=%s/%s}",
 		c.Mode, c.InverterIP, serial, c.InverterPort, c.InverterSocketTimeout, c.SidecarURL,
-		c.PollInterval, c.PollMaxRetries, c.FailureThreshold, c.ControlsEnabled, c.MQTTBrokerURL,
+		c.PollInterval, c.PollMaxRetries, c.FailureThreshold,
+		c.RTCSyncEnabled, c.RTCDriftThreshold, c.ControlsEnabled, c.MQTTBrokerURL,
 		c.MQTTUsername, password, c.MQTTClientID, c.MQTTTopicPrefix, c.HADiscoveryPrefix,
 		c.HealthAddr, c.LogLevel, c.LogFormat)
 }
@@ -190,6 +213,8 @@ func (c *Config) LogValue() slog.Value {
 		slog.Duration("poll_interval", c.PollInterval),
 		slog.Int("poll_max_retries", c.PollMaxRetries),
 		slog.Int("failure_threshold", c.FailureThreshold),
+		slog.Bool("rtc_sync_enabled", c.RTCSyncEnabled),
+		slog.Duration("rtc_drift_threshold", c.RTCDriftThreshold),
 		slog.Bool("controls_enabled", c.ControlsEnabled),
 		slog.String("mqtt_broker_url", c.MQTTBrokerURL),
 		slog.String("mqtt_username", c.MQTTUsername),

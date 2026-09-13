@@ -68,6 +68,15 @@ func NewHandler(rw HoldingReadWriter, log *slog.Logger, enabled bool, refresh fu
 	return h
 }
 
+// Apply is the scheduler's Commander seam: it routes one inbound command exactly
+// like OnMessage. The scheduler calls it while holding apiMu, so a whole guarded
+// write + re-read + refresh is atomic against a concurrent poll. It is an alias for
+// OnMessage kept so the scheduler depends on a small interface rather than the
+// concrete handler.
+func (h *Handler) Apply(ctx context.Context, topic string, payload []byte) {
+	h.OnMessage(ctx, topic, payload)
+}
+
 // OnMessage handles one inbound command message. It is defensive end-to-end: a
 // top-level recover guarantees a malformed command can never crash the message
 // pump.
@@ -150,18 +159,54 @@ func (h *Handler) setOptimalIncome(ctx context.Context, key string, payload []by
 
 // syncRTC guards each of the six RTC holding registers; each Guard skips a
 // register whose value already matches, so only drifted registers are written.
-// A single register failure is logged and the loop continues.
+// A single register failure is logged and the loop continues. This is the manual
+// "Sync RTC now" command path; it reports "routed" so refresh fires afterwards.
 func (h *Handler) syncRTC(ctx context.Context, key string) bool {
-	for _, reg := range inverter.RTCWriteRegisters(h.now()) {
-		h.guardOne(ctx, key, reg.Addr, reg.Value)
-	}
+	_, _ = h.syncRTCTo(ctx, key)
 	return true
 }
 
-// guardOne runs Guard for one register and logs the outcome, classifying a
-// re-read mismatch (error) apart from a transport failure.
+// SyncRTC is the scheduler seam for opt-in, threshold-gated RTC auto-sync
+// (REQ-HA-13). It writes the six RTC holding registers (43000–43005) to the
+// handler's current clock under the read-before-write guard, so only drifted
+// registers are actually written. It reports whether any register was written
+// (wrote=true means at least one fc06 was issued) and the first error, if any.
+// The scheduler invokes this from its poll — already holding apiMu — when RTC
+// auto-sync is enabled and measured drift exceeds the threshold.
+func (h *Handler) SyncRTC(ctx context.Context) (bool, error) {
+	return h.syncRTCTo(ctx, keyRTCSync)
+}
+
+// syncRTCTo guards the six RTC registers against the handler clock, logging each
+// outcome, and returns whether any write was issued plus the first error seen. It
+// backs both the manual command (syncRTC) and the scheduler seam (SyncRTC).
+func (h *Handler) syncRTCTo(ctx context.Context, key string) (bool, error) {
+	wrote := false
+	var firstErr error
+	for _, reg := range inverter.RTCWriteRegisters(h.now()) {
+		res, err := Guard(ctx, h.rw, reg.Addr, reg.Value)
+		h.logGuard(key, reg.Addr, reg.Value, res, err)
+		if res.Wrote {
+			wrote = true
+		}
+		if err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return wrote, firstErr
+}
+
+// guardOne runs Guard for one register and logs the outcome. The single-register
+// command paths (amps, work-mode) use it; syncRTCTo calls Guard directly so it can
+// aggregate the per-register results.
 func (h *Handler) guardOne(ctx context.Context, key string, addr int, value uint16) {
 	res, err := Guard(ctx, h.rw, addr, value)
+	h.logGuard(key, addr, value, res, err)
+}
+
+// logGuard logs one guarded-write outcome, classifying a re-read mismatch (error)
+// apart from a transport failure, a skip (no-op) and a confirmed write.
+func (h *Handler) logGuard(key string, addr int, value uint16, res Result, err error) {
 	switch {
 	case err != nil && res.Wrote:
 		h.log.Error("controls: write did not confirm", "key", key, "addr", addr, "desired", value, "reread", res.New, "err", err)

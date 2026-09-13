@@ -68,8 +68,8 @@ payload shapes and the 33-entity table.
   → `cmd/serve.go`, `mqtt/client.go`
 - **REQ-HA-06** MODE gating: publish only when an MQTT broker URL is configured;
   `live` requires it; `mock` without a broker runs the same `Collect` unit and logs
-  decoded telemetry. Interim poll cadence = `POLL_INTERVAL` (default 60s; real
-  scheduler is Phase 6). → `cmd/serve.go`, `config.go`
+  decoded telemetry. Poll cadence = `POLL_INTERVAL` (default 60s), driven by the
+  Phase-6 scheduler (`REQ-SC-01`). → `cmd/serve.go`, `config.go`
 - **REQ-HA-07** Read-only in Phase 4; writable controls (`number`/`switch`/`select`)
   and the **READ-BEFORE-WRITE write-guard** on every setpoint (flash-wear avoidance)
   are **Phase 5** — see the CRITICAL write-guard section in
@@ -103,16 +103,41 @@ See the write-path sections of
   → `internal/controls`
 - **REQ-HA-13** Manual **"Sync RTC now" button** (`rtc_sync`): guarded per-register
   write of the six RTC holding registers `43000–43005` to the current local
-  datetime; periodic/threshold-gated auto-sync is **deferred to Phase 6**. Kill-switch
-  `CONTROLS_ENABLED` (default true); **Ruling R1** — when false, the four command
-  entities are **omitted from discovery** and the command topic is not subscribed
-  (state setpoint fields may still publish).
-  → `internal/homeassistant`, `internal/controls`
+  datetime. Periodic/threshold-gated **auto-sync** is now available (Phase 6),
+  **opt-in** via `RTC_SYNC_ENABLED` and folded into the poll — see `REQ-SC-06`.
+  Kill-switch `CONTROLS_ENABLED` (default true); **Ruling R1** — when false, the four
+  command entities are **omitted from discovery**, the command topic is not
+  subscribed, and RTC auto-sync is disabled (it needs the write path).
+  → `internal/homeassistant`, `internal/controls`, `internal/scheduler`
 
 ## Scheduling (`internal/scheduler`, `04-polling-scheduling.md`)
 
-- TODO **REQ-SC-\***: serialised poll loop; retries; readiness reporting; guarded
-  writes. → `scheduler/*`
+Phase 6 (#23) replaces the interim ticker with the resilient scheduler: a single
+goroutine with an injectable clock, backoff, a retained last-good cache, and
+health-driven readiness.
+
+- **REQ-SC-01** Serialised poll loop at `POLL_INTERVAL` (default `60s`, floor `5s`)
+  with an **immediate first poll**; ticks never overlap (`apiMu`). Single goroutine.
+  → `scheduler/scheduler.go`, `cmd/serve.go`
+- **REQ-SC-02** Transient telemetry-read failures retried up to `POLL_MAX_RETRIES`
+  (default `3`) with **exponential backoff** (`1s, 2s, 4s, …`), honouring `ctx` and an
+  injectable `After`. A retry-absorbed failure never flips readiness. → `scheduler/*`
+- **REQ-SC-03** Retained last-good cache: the most recent successful
+  `(telemetry, setpoints)` is cached and never cleared on failure, so HA holds
+  last-good values; the reconnect republish hook reads it (`LastState`). A setpoints
+  sub-read failure reuses last-known setpoints rather than blanking. → `scheduler/*`,
+  `cmd/serve.go`
+- **REQ-SC-04** Readiness reporting: `MarkSuccess` on a successful poll, `MarkFailure`
+  on a failed one; readiness flips per `REQ-LC-09`. → `scheduler/*`, `internal/server`
+- **REQ-SC-05** Command↔poll serialisation (**mutex-on-demand**): `ApplyCommand`
+  takes the same `apiMu` as the poll, so a guarded write + re-read + refresh is atomic
+  against a poll. → `scheduler/*`, `cmd/serve.go`, `internal/mqtt`
+- **REQ-SC-06** Opt-in, threshold-gated **RTC auto-sync** folded into the poll: when
+  `RTC_SYNC_ENABLED` and `|Drift| > RTC_DRIFT_THRESHOLD`, run the guarded
+  `43000–43005` write under `apiMu` (no second goroutine); self-limiting, disabled
+  when `CONTROLS_ENABLED=false`. → `scheduler/*`, `internal/controls`
+- **REQ-SC-07** Injectable `Now`/`After` for deterministic `testing/synctest` tests;
+  the scheduler and controls handler share one clock. → `scheduler/*`
 
 ## Config (`internal/config`, `05-config.md`)
 
@@ -122,14 +147,26 @@ See the write-path sections of
   `String()`/`LogValue()`. → `config.go`
 - **REQ-CF-04** `MODE` (`live`|`mock`): `live` requires inverter identity + MQTT
   broker; `mock` drops them. → `config.go`, `.env.dist`
+- **REQ-CF-05** `POLL_MAX_RETRIES` (default `3`, `>= 0`) and `FAILURE_THRESHOLD`
+  (default `3`, `>= 1`) are consumed by the scheduler (backoff attempts) and the
+  server (readiness threshold) respectively. → `config.go`, `scheduler/*`, `server`
+- **REQ-CF-06** RTC auto-sync knobs: `RTC_SYNC_ENABLED` (bool, default `false`) and
+  `RTC_DRIFT_THRESHOLD` (Go duration, default `60s`, must be `> 0`). Redacted-safe and
+  logged like the rest of the config. → `config.go`, `.env.dist`, `scheduler/*`
 
 ## Lifecycle & health (`internal/server`, `cmd`, `main.go`, `06-lifecycle-health.md`)
 
 - **REQ-LC-01** `/healthz` liveness always-ok while running. → `internal/server`
-- **REQ-LC-02** `/readyz` `503` until ready, `200` once `SetReady(true)`. →
+- **REQ-LC-02** `/readyz` `503` until ready, `200` once a poll succeeds. →
   `internal/server`
-- TODO **REQ-LC-\***: not-ready after `FAILURE_THRESHOLD` failures; sidecar probe on
-  `/readyz`; graceful `offline` publish + clean disconnect. → `cmd/serve.go`
+- **REQ-LC-09** Readiness is scheduler-driven via `MarkSuccess`/`MarkFailure`: ready
+  after the first successful poll, not-ready after `FAILURE_THRESHOLD` **consecutive**
+  failures (counter resets on success; failures below the threshold hold the current
+  state). `/readyz` reflects sidecar reachability transitively (an unreachable sidecar
+  fails the poll). → `internal/server`, `internal/scheduler`, `cmd/serve.go`
+- **REQ-LC-10** Graceful shutdown: drain the scheduler first, then publish a retained
+  `offline` and disconnect the broker cleanly before stopping the health server. →
+  `cmd/serve.go`
 - **REQ-LC-08** `cmd/main.go` reports errors to stderr and exits non-zero. →
   `cmd/main.go`
 

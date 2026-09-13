@@ -11,12 +11,15 @@ import (
 	"strings"
 	"testing"
 
+	"time"
+
 	"github.com/cucumber/godog"
 
 	"github.com/gsdevme/solis-inverter-manager/internal/controls"
 	"github.com/gsdevme/solis-inverter-manager/internal/homeassistant"
 	"github.com/gsdevme/solis-inverter-manager/internal/inverter"
 	"github.com/gsdevme/solis-inverter-manager/internal/publisher"
+	"github.com/gsdevme/solis-inverter-manager/internal/scheduler"
 	"github.com/gsdevme/solis-inverter-manager/internal/server"
 )
 
@@ -85,6 +88,37 @@ func (f *fakeHRW) reads1Count(addr int) int {
 	return n
 }
 
+// pollingReader is a scheduler.StateReader for the resilience scenarios. It fails
+// its first failN reads (transient errors the scheduler retries with backoff) then
+// returns telemetry carrying a fixed battery SOC. startFailing() makes every
+// subsequent read fail, so a scenario can drive persistent failure after a good poll.
+type pollingReader struct {
+	failN int
+	calls int
+	soc   float64
+}
+
+func (r *pollingReader) Read(context.Context) (inverter.Telemetry, homeassistant.Setpoints, error) {
+	r.calls++
+	if r.calls <= r.failN {
+		return inverter.Telemetry{}, homeassistant.Setpoints{}, fmt.Errorf("stub transient read failure")
+	}
+	var tel inverter.Telemetry
+	tel.Battery.SOCPercent = r.soc
+	return tel, homeassistant.Setpoints{}, nil
+}
+
+func (r *pollingReader) startFailing() { r.failN = r.calls + 1_000_000 }
+
+// nopPublisher is a scheduler.StatePublisher that never errors (no broker in the
+// suite); the resilience scenarios assert readiness and the cache, not payloads.
+type nopPublisher struct{ count int }
+
+func (p *nopPublisher) PublishState(context.Context, inverter.Telemetry, homeassistant.Setpoints) error {
+	p.count++
+	return nil
+}
+
 // world holds per-scenario state. The scaffold wires the real status server behind
 // an httptest server and exercises its probes — no inverter, sidecar or broker.
 // The MQTT fields drive the publisher against a recording client and the stub
@@ -101,6 +135,9 @@ type world struct {
 	hrw     *fakeHRW
 	handler *controls.Handler
 	sp      homeassistant.Setpoints
+
+	sched   *scheduler.Scheduler
+	sreader *pollingReader
 }
 
 func (w *world) reset() {
@@ -113,6 +150,8 @@ func (w *world) reset() {
 	w.hrw = nil
 	w.handler = nil
 	w.sp = homeassistant.Setpoints{}
+	w.sched = nil
+	w.sreader = nil
 }
 
 func (w *world) cleanup() {
@@ -387,6 +426,54 @@ func (w *world) stateReportsString(key, want string) error {
 	return nil
 }
 
+// --- Resilient scheduling / readiness steps ---
+
+// immediateAfter fires the backoff channel instantly, so retries run synchronously
+// within a PollNow call with no wall-clock wait. Timing is covered by the
+// scheduler's synctest unit tests; here we assert behaviour (retry, cache, readiness).
+func immediateAfter(time.Duration) <-chan time.Time {
+	ch := make(chan time.Time, 1)
+	ch <- time.Now()
+	return ch
+}
+
+func (w *world) resilientScheduler(failN, threshold int) error {
+	w.stat = server.New(server.Config{FailureThreshold: threshold})
+	w.srv = httptest.NewServer(w.stat.Handler())
+	w.sreader = &pollingReader{failN: failN, soc: 47}
+	w.sched = scheduler.New(w.sreader, &nopPublisher{}, w.stat, nil, nil, scheduler.Config{
+		PollInterval: time.Minute,
+		MaxRetries:   3,
+		Logger:       quietLogger(),
+		Now:          time.Now,
+		After:        immediateAfter,
+	})
+	return nil
+}
+
+func (w *world) schedulerCompletesPolls(n int) error {
+	for range n {
+		w.sched.PollNow(context.Background())
+	}
+	return nil
+}
+
+func (w *world) inverterStartsFailing() error {
+	w.sreader.startFailing()
+	return nil
+}
+
+func (w *world) lastGoodReportsSOC(want int) error {
+	tel, _, have := w.sched.LastState()
+	if !have {
+		return fmt.Errorf("no last-good state cached")
+	}
+	if int(tel.Battery.SOCPercent) != want {
+		return fmt.Errorf("last-good battery SOC = %v, want %d", tel.Battery.SOCPercent, want)
+	}
+	return nil
+}
+
 func TestFeatures(t *testing.T) {
 	w := &world{}
 	suite := godog.TestSuite{
@@ -426,6 +513,11 @@ func TestFeatures(t *testing.T) {
 			ctx.Step(`^a poll is collected and state is published with those setpoints$`, w.stateWithSetpoints)
 			ctx.Step(`^the state document reports (set_charge_current|set_discharge_current) as ([-\d.]+)$`, w.stateReportsNumber)
 			ctx.Step(`^the state document reports (optimal_income) as "([^"]*)"$`, w.stateReportsString)
+
+			ctx.Step(`^a resilient scheduler whose inverter fails the first (\d+) reads and a failure threshold of (\d+)$`, w.resilientScheduler)
+			ctx.Step(`^the scheduler completes (\d+) polls?$`, w.schedulerCompletesPolls)
+			ctx.Step(`^the inverter starts failing every read$`, w.inverterStartsFailing)
+			ctx.Step(`^the last-good state reports battery SOC (\d+)$`, w.lastGoodReportsSOC)
 		},
 		Options: &godog.Options{
 			Format:   "pretty",
