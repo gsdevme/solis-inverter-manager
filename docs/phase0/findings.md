@@ -101,6 +101,16 @@ S32 −132 W ≈ meter `33263` −129 W ✓; RTC = wall clock (± drift, below) 
 | 43145 / 43146 | Timed charge end H / M | U16 | 0–23 / 0–59 | 0 / 0 | — |
 | 43147 / 43148 | Timed discharge start H / M | U16 | 0–23 / 0–59 | 0 / 0 | — |
 | 43149 / 43150 | Timed discharge end H / M | U16 | 0–23 / 0–59 | 0 / 0 | — |
+| 43151 / 43152 | Slot 2 timed charge / discharge current | U16 | ÷10 A | 0 / 0 | slot 2 = 43151–43160: slot-1 layout at stride 10 (Stage A) |
+| 43153 / 43154 | Slot 2 charge start H / M | U16 | 0–23 / 0–59 | 0 / 0 | — |
+| 43155 / 43156 | Slot 2 charge end H / M | U16 | 0–23 / 0–59 | 5 / 29 | 05:29, owner-set in the Solis app |
+| 43157 / 43158 | Slot 2 discharge start H / M | U16 | 0–23 / 0–59 | 0 / 0 | — |
+| 43159 / 43160 | Slot 2 discharge end H / M | U16 | 0–23 / 0–59 | 0 / 0 | — |
+| 43161 / 43162 | Slot 3 timed charge / discharge current | U16 | ÷10 A | 0 / 0 | slot 3 = 43161–43170 (Stage A) |
+| 43163 / 43164 | Slot 3 charge start H / M | U16 | 0–23 / 0–59 | 14 / 2 | 14:02, owner-set in the Solis app |
+| 43165 / 43166 | Slot 3 charge end H / M | U16 | 0–23 / 0–59 | 14 / 56 | 14:56 |
+| 43167 / 43168 | Slot 3 discharge start H / M | U16 | 0–23 / 0–59 | 0 / 0 | — |
+| 43169 / 43170 | Slot 3 discharge end H / M | U16 | 0–23 / 0–59 | 0 / 0 | — |
 
 ## The 43110 work-mode bitfield (confirmed)
 
@@ -162,6 +172,30 @@ Amps write encoding: `int(round(amps, 1) * 10)`, fc06. Inverter accepts up to
 | 9 | Amps write limit | Unit allows 100 A; HA control clamped 0–60 A per plan |
 | 10 | Max single-read width | Datalogger NAKs `illegal_address` above ~100 regs (probed: `ReadInput(33022,125)` NAK; `33022+100` OK, `33022+110` NAK). Manager reads the telemetry bank as two blocks of ≤100 (split `33121\|33122`); stricter than the sidecar's 125 wire cap |
 
+## Stage A (#27) — timed-slot layout & SOC probe
+
+Live fc03 sweep of holding 43000–43195 on 2026-09-13 via the shipped sidecar in
+`MODE=live` (`fixtures/live-snapshot-holding-stage-a.json`), cross-checked against
+the owner's Solis-app Time-of-Use screen.
+
+- **Timed slots 2 and 3 exist at stride 10, same layout as slot 1:** slot 2 =
+  43151–43160, slot 3 = 43161–43170. The only non-zero values in 43151–43195 fall
+  exactly on the predicted H/M positions and are the windows the owner set in the
+  app — slot 2 charge end 05:29 (`43155/56`), slot 3 charge 14:02–14:56
+  (`43163–66`); slot 3 was zero in the Phase 0 sweep. 43171–43195 read all-zero.
+- **43090–43122 is *not* a schedule table** (the Stage B premise is ruled out).
+  The values are protection/config thresholds: `43112`=2300 → 230.0 V,
+  `43113`=5000 → 50.00 Hz, `43098/43100/43102/43104` = 52.0/52.5/47.5/47.0 V and
+  `43119–43122` = 42.0/53.5/55.0/60.0 V (48 V battery limits). Exact meanings are
+  *not* decoded — only the "not a schedule" conclusion is confirmed.
+- **43024 = 45, 43025 = 50** — shaped like a force-charge / backup SOC pair.
+  Meaning and scale are **unconfirmed** pending an LCD/app cross-check.
+- **Time-register write behaviour (43143–43150, slot 2/3) and 43024 writability:
+  pending** the write→read-back→restore probe (`43144`, `43164`, `43024`, +1 each,
+  checkpoints 0/60/130 s); results land in `fixtures/write-probe-stage-a.json`.
+- Drift vs Phase 0: RTC in sync (`43000–43005` = 2026-09-13 14:59:03), energy
+  counters advanced, nothing else changed except the slot-3 window.
+
 ## Additional registers captured (full sweep)
 
 The entire range **input 33000–33304** and **holding 43000–43195** is *addressable*
@@ -178,8 +212,9 @@ Notable extras beyond the confirmed map above (decode as future features permit)
   above).
 - **holding 43034–43067** — mirror copies of several input statistics (e.g.
   `43057`=21717 total generation mirrors input `33030`).
-- **holding 43090–43122** — multi-slot timed charge/discharge schedule table +
-  instant-current config (`43114`–`43122`) and min/backup SOC (`43011`, `43024`).
+- **holding 43090–43122** — protection/config thresholds (voltage- and
+  frequency-shaped; **not** a schedule table, see §Stage A) + instant-current
+  config (`43114`–`43118`) and min/backup SOC (`43011`, `43024`).
 - Various limit/config registers in `33181–33217` and `43012–43049` (charge
   voltage/current limits, SOC targets) — captured for later.
 
@@ -192,5 +227,7 @@ Notable extras beyond the confirmed map above (decode as future features permit)
 - `fixtures/live-snapshot-full-sweep.json` — full 33000–33304 / 43000–43195 dump
   (inverter serial redacted).
 - `fixtures/write-path-probe.json` — the restored write test on 43141.
+- `fixtures/live-snapshot-holding-stage-a.json` — Stage A (#27) holding
+  43000–43195 sweep confirming timed slots 2/3.
 
 These are the ground truth for the Go decode unit tests (Phase 3).

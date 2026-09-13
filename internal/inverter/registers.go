@@ -6,9 +6,9 @@ package inverter
 // keyed from the block base address.
 //
 // Only registers the spec's input/holding tables confirm are named here. The
-// deferred set (serial ASCII, model/firmware, the multi-slot schedule table, and
-// various limit/config registers) is out of scope until a later phase confirms
-// its decode.
+// deferred set (serial ASCII, model/firmware, the 43090–43122 threshold table,
+// the 43024/43025 SOC pair, and various limit/config registers) is out of scope
+// until a later phase confirms its decode.
 
 // Input registers (fc04, read-only).
 const (
@@ -93,6 +93,15 @@ const (
 	RegTimedDischargeStartMin  = 43148
 	RegTimedDischargeEndHour   = 43149
 	RegTimedDischargeEndMin    = 43150
+
+	// Timed slots 2 and 3 repeat the slot-1 layout (43141–43150) at a stride of
+	// RegTimedSlotStride: confirmed in Stage A (#27) against the live inverter and
+	// the owner's Solis-app Time-of-Use screen. Field offsets within a slot match
+	// slot 1 (e.g. charge-start minute = base + RegTimedChargeStartMinute -
+	// RegTimedChargeCurrent).
+	RegTimedSlotStride = 10
+	RegTimedSlot2Base  = RegTimedChargeCurrent + RegTimedSlotStride   // 43151
+	RegTimedSlot3Base  = RegTimedChargeCurrent + 2*RegTimedSlotStride // 43161
 )
 
 // rtcRegisterCount is the number of consecutive registers in an RTC block

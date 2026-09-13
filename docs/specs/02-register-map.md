@@ -125,6 +125,8 @@ so the two reads need no merging.
 | 43145 / 43146 | Timed charge end H / M | U16 | 0–23 / 0–59 | R/W |
 | 43147 / 43148 | Timed discharge start H / M | U16 | 0–23 / 0–59 | R/W |
 | 43149 / 43150 | Timed discharge end H / M | U16 | 0–23 / 0–59 | R/W |
+| 43151–43160 | Timed slot 2 (same 10-register layout as 43141–43150) | U16×10 | as slot 1 | R/W |
+| 43161–43170 | Timed slot 3 (same 10-register layout as 43141–43150) | U16×10 | as slot 1 | R/W |
 
 ## Work-mode bitfield (43110)
 
@@ -167,5 +169,7 @@ The full sweep (`input 33000–33304`, `holding 43000–43195`) reads cleanly. B
 the set above (decode as future features permit, per findings.md §"Additional
 registers"): product/model/firmware (33000–33003), inverter serial as ASCII
 (33004–33011, for the HA device block), holding mirrors of input stats
-(43034–43067), the multi-slot schedule table (43090–43122), and various
-limit/config registers (33181–33217, 43012–43049).
+(43034–43067), the protection-threshold table (43090–43113, 43119–43122 —
+ruled out as a schedule in Stage A, #27), the candidate force-charge/backup SOC
+pair (43024/43025, meaning unconfirmed), and various limit/config registers
+(33181–33217, 43012–43049).
