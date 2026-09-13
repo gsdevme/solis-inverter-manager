@@ -194,16 +194,16 @@ field. The payload adds `options`, `state_topic: ~/state`,
   3; the ToU window is restored after an app-side edit; steady-state polls issue
   no writes (sidecar log shows no `write_holding`).
 
-## Open item — how a clear is written
+## How a clear is written (confirmed)
 
-Stage A confirmed non-zero H/M writes only. A live probe (write `43163`–`43166`
-= 0, read back at 0/60 s, restore) decides the clear mechanic:
-
-- **zeros accepted (expected):** "empty" = all four registers 0, as decoded today.
-- **zeros rejected:** "empty" = a degenerate past window (`00:01→00:01`), and the
-  B1 decoders treat `start == end` as unset as well.
-
-The spec is finalised on the probe result before implementation starts.
+Stage A confirmed non-zero H/M writes only, so the clear mechanic was probed
+live before this spec was finalised (`docs/phase0/findings.md`, "Stage B2
+pre-design probe"; `fixtures/write-probe-clear-slot3.json`): writing `0` to
+`43163`–`43166` one register at a time left the slot all-zero at 0 s and 60 s,
+and the restore read back correctly. **"Empty" is all four H/M registers = 0**,
+the same encoding the B1 decoders already treat as unset. A clear therefore
+writes zeros in the standard order (start hour, start minute, end hour, end
+minute) through the guard, so an already-cleared slot costs no fc06.
 
 ## Deferred (probe-first Stage C, not in B2)
 

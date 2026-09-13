@@ -173,6 +173,7 @@ Amps write encoding: `int(round(amps, 1) * 10)`, fc06. Inverter accepts up to
 | 10 | Max single-read width | Datalogger NAKs `illegal_address` above ~100 regs (probed: `ReadInput(33022,125)` NAK; `33022+100` OK, `33022+110` NAK). Manager reads the telemetry bank as two blocks of ≤100 (split `33121\|33122`); stricter than the sidecar's 125 wire cap |
 | 11 | Timed H/M register writes (43143–43150, slots 2/3) | fc06 accepted, persist ≥130 s, restore confirmed (Stage A probe on 43144, 43164) |
 | 12 | 43024 writability | fc06 **acked but ignored** — read-back unchanged at 0/60/130 s; treat as read-only |
+| 13 | Clearing a timed slot by zeroing its H/M pair | **Confirmed** — slot-3 charge `43163`–`43166` written 0/0/0/0, read back all-zero at 0 s and 60 s, restored to 14/2/14/56 with read-back (Stage B2 pre-design probe, `fixtures/write-probe-clear-slot3.json`) |
 
 ## Stage A (#27) — timed-slot layout & SOC probe
 
@@ -241,5 +242,27 @@ Notable extras beyond the confirmed map above (decode as future features permit)
   43000–43195 sweep confirming timed slots 2/3.
 - `fixtures/write-probe-stage-a.json` — Stage A write→read-back→restore probe on
   43144 and 43164 (held) and 43024 (acked but ignored).
+- `fixtures/write-probe-clear-slot3.json` — Stage B2 pre-design probe: zeroing
+  slot-3 charge H/M (43163–43166) clears the window; held at 0/60 s; restored.
 
 These are the ground truth for the Go decode unit tests (Phase 3).
+
+## Stage B2 pre-design probe — clearing a slot (confirmed)
+
+Approach A (`docs/specs/09-schedule-controls.md`) ends a boost by writing the
+slot back to "empty". Stage A had only confirmed non-zero H/M writes, so before
+the design was finalised the owner ran a read-back-verified probe on the app-set
+slot-3 charge window (`43163`–`43166` = 14/2/14/56, `43110` = 35):
+
+- each of the four registers written to `0` via fc06, one at a time
+  (start hour, start minute, end hour, end minute);
+- the whole `43161`–`43170` block read back **all-zero at 0 s and at 60 s**;
+- the four originals restored and confirmed by read-back (`14/2/14/56`);
+- `43161`/`43162` (unconfirmed leading pair) untouched throughout.
+
+Conclusion: an all-zero H/M window is a valid, persistent "unset" state — the
+same encoding the B1 decoders (`inverter.TimedWindow.IsZero`) already treat as
+empty — so B2 clears a boost by zeroing offsets `+2..+5` (or `+6..+9`) of slot 3.
+The first read of the session returned one sidecar `503` after ~18 min idle
+(datalogger dropped the session; the sidecar reset it and the retry succeeded) —
+the same laggy-link behaviour the manager's read-with-retry covers.
