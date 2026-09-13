@@ -12,7 +12,7 @@ The work is split across three packages plus the serve wiring:
 
 - **`internal/homeassistant`** — a **pure payload builder**. It has no I/O and
   never reads the wall clock. `Config` derives the topics; `Entities()` is the
-  stably ordered 33-entity catalogue; `BuildDiscovery()` returns one discovery
+  stably ordered 36-entity catalogue; `BuildDiscovery()` returns one discovery
   `Message` per entity; `BuildState()` marshals a decoded `inverter.Telemetry`
   (plus an externally supplied clock drift) into the retained state document.
 - **`internal/mqtt`** — the MQTT5 transport, wrapping `paho.golang/autopaho`. It
@@ -54,7 +54,7 @@ and `~/availability`, every other key is spelled out in full.
 ## Device block
 
 Every entity carries the **identical** device block, so Home Assistant groups all
-33 entities under one device:
+36 entities under one device:
 
 ```json
 {
@@ -102,9 +102,11 @@ retained-topic cleanup is unambiguous.
 ## State document
 
 One retained JSON object at `<base>/state`, built by `BuildState` from
-`internal/homeassistant/state.go`. Its json tags are exactly the 33 entity keys
-(the `State` struct is the contract: no entity without a field, no field without
-an entity). Each entity reads its own field via `value_template`:
+`internal/homeassistant/state.go`. Its json tags are the 36 read-only entity
+keys plus the three control-readback fields (`set_charge_current`,
+`set_discharge_current`, `optimal_income`) — 39 tags (the `State` struct is
+the contract: no entity without a field, no field without an entity). Each
+entity reads its own field via `value_template`:
 
 - sensor: `{{ value_json.<key> }}`
 - binary_sensor: `{{ 'ON' if value_json.<key> else 'OFF' }}`
@@ -120,10 +122,13 @@ Value encodings of note:
   `Optimal income OFF`; otherwise the active flags (`self_use`, `timed`,
   `allow_grid_charge`) are joined with `+`, falling back to the raw register
   value when no known flag is set.
+- `tou_window`, `boost`, `boost_ends_at` are the derived schedule fields, e.g.
+  `tou_window: "23:31–05:29"` — see the "State document additions" table below
+  for their shape and source.
 
 ## Entity table
 
-All 33 entities, mirrored row-for-row from `internal/homeassistant/entities.go`.
+All 36 entities, mirrored row-for-row from `internal/homeassistant/entities.go`.
 Blank cells mean the field is empty in the code and the key is therefore omitted
 from that entity's discovery payload.
 
@@ -162,8 +167,16 @@ from that entity's discovery payload.
 | 31 | `work_mode` | sensor | | | | diagnostic |
 | 32 | `rtc` | sensor | timestamp | | | diagnostic |
 | 33 | `rtc_drift` | sensor | duration | | s | diagnostic |
+| 34 | `tou_window` | sensor | | | | |
+| 35 | `boost` | sensor | | | | |
+| 36 | `boost_ends_at` | sensor | timestamp | | | |
 
 Notes:
+- **`tou_window`, `boost`, and `boost_ends_at` are primary entities** (no
+  `entity_category`), unlike the diagnostic `rtc`/`status`/`rtc_drift` sensors:
+  they surface the derived, actionable schedule (the joined ToU window and the
+  current boost slot), not raw diagnostics, so do not reclassify them as
+  `diagnostic`.
 - **`total` vs `total_increasing`.** Daily counters that reset at midnight use
   `state_class: total` (`grid_import_today`, `grid_export_today`,
   `generation_today`, `battery_charge_today`, `battery_discharge_today`).
@@ -326,7 +339,7 @@ entities in its catalogue; `internal/mqtt` gains command-topic subscription; and
 ### Control entities
 
 Four writable entities join the catalogue (the read-only table above is unchanged
-at 33; with controls enabled the device carries 37). Registers are the Phase 0
+at 36; with controls enabled the device carries 40). Registers are the Phase 0
 confirmed addresses — never invent them.
 
 | Key | Component | Range / payloads | Register | Encoding |
@@ -361,12 +374,41 @@ control's discovery payload therefore sets `state_topic: ~/state`.
 | `set_discharge_current` | float (amps) | `43142 ÷ 10` |
 | `optimal_income` | string `"ON"`/`"OFF"` | bit 1 of `43110` |
 
+The derived schedule sensors `tou_window`, `boost`, and `boost_ends_at` are
+**not** control-readback fields — they carry no command topic and exist
+whether or not `CONTROLS_ENABLED` is set. They are three of the 36 entities in
+the read-only entity table above (rows 34–36), not an addition beyond it; they
+are listed here only because they share the same `~/state` document and the
+same extended holding-bank read as the three control fields:
+
+| Field | Type | Source |
+| --- | --- | --- |
+| `tou_window` | string `"HH:MM–HH:MM"` or `null` | `internal/schedule.ToU` + `FormatWindow` — see REQ-HA-14 for the join/fallback/null cases |
+| `boost` | string | `internal/schedule.Boost.String()`, derived from slot 3 |
+| `boost_ends_at` | RFC3339 string or `null` | `internal/schedule.Boost.EndsAt`, computed in `serve.go` with the shared clock |
+
+`boost` reflects the slot-3 *configuration*, not whether the window is
+currently running; a `boost_ends_at` in the past means the configured window
+has elapsed and slot 3 has not been cleared (B2 adds the write path that
+clears it).
+
 The values come from **one extra holding-bank read per poll**: a single
-`ReadHolding(43110, 33)` — one fc03 frame covers `43110` plus `43141`/`43142`, and
-`33` registers is well under the 125-register-per-frame cap (REQ-SD-02). The
-read-only 33-entity state contract is unchanged; these three fields extend the
-`State` DTO, and `BuildState` stays pure (the holding words are decoded and passed
-in, as with `rtc_drift`).
+`ReadHolding(43110, 61)` — one fc03 frame now covers `43110` through the three
+timed slots at `43141`–`43170`, and `61` registers is well under the
+125-register-per-frame cap (REQ-SD-02). The three control-readback fields above
+extend the `State` DTO without adding entities — the read-only 36-entity table
+is unchanged by them. `BuildState` stays pure — the holding words are decoded
+and passed in, as with `rtc_drift`; `boost_ends_at` alone needs a clock, so it
+is likewise computed by the caller (`serve.go`) rather than by `BuildState`
+itself.
+
+`tou_window` and `boost_ends_at` are JSON `null` when unset (pointer fields, no
+`omitempty` — the keys are always present, never omitted); see REQ-HA-14 for
+exactly when `tou_window` is the joined window, slot 1 alone, or `null`. Home
+Assistant renders a JSON `null` through `{{ value_json.boost_ends_at }}` as the
+Jinja value `None`, which a `device_class: timestamp` sensor then shows as
+state *unknown* — this is the intended behaviour when there is no boost
+window, and needs no custom `value_template`.
 
 ### Server-side validation
 

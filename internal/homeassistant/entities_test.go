@@ -13,6 +13,7 @@ var wantKeys = []string{
 	"generation_today", "generation_yesterday", "battery_total_charge", "battery_charge_today",
 	"battery_total_discharge", "battery_discharge_today",
 	"status", "operating_status", "work_mode", "rtc", "rtc_drift",
+	"tou_window", "boost", "boost_ends_at",
 	"set_charge_current", "set_discharge_current", "optimal_income", "rtc_sync",
 }
 

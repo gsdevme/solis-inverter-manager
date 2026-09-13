@@ -43,11 +43,11 @@ func TestStateTagsEqualEntityKeys(t *testing.T) {
 		}
 		keys[e.Key] = true
 	}
-	if len(keys) != 36 {
-		t.Errorf("got %d stateful entity keys, want 36", len(keys))
+	if len(keys) != 39 {
+		t.Errorf("got %d stateful entity keys, want 39", len(keys))
 	}
-	if len(tags) != 36 {
-		t.Errorf("got %d state json tags, want 36", len(tags))
+	if len(tags) != 39 {
+		t.Errorf("got %d state json tags, want 39", len(tags))
 	}
 	for k := range keys {
 		if !tags[k] {
@@ -181,5 +181,74 @@ func TestWorkModeLabel(t *testing.T) {
 		if got := workModeLabel(inverter.DecodeWorkMode(tc.raw)); got != tc.want {
 			t.Errorf("workModeLabel(%d) = %q, want %q", tc.raw, got, tc.want)
 		}
+	}
+}
+
+// touSlots is the owner's live schedule: the Time-of-Use tariff split across
+// slots 1 and 2 at midnight, plus an afternoon boost in slot 3.
+func touSlots() inverter.TimedSlots {
+	clock := func(hour, minute uint8) inverter.Clock {
+		return inverter.Clock{Hour: hour, Minute: minute}
+	}
+	return inverter.TimedSlots{
+		{Charge: inverter.TimedWindow{Start: clock(23, 31), End: clock(0, 0)}},
+		{Charge: inverter.TimedWindow{Start: clock(0, 0), End: clock(5, 29)}},
+		{Charge: inverter.TimedWindow{Start: clock(14, 2), End: clock(14, 56)}},
+	}
+}
+
+// TestBuildStateSchedule covers the three derived schedule sensors for a
+// configured schedule: the midnight-split Time-of-Use pair reads as one window,
+// slot 3 reads as the boost, and boost_ends_at is the RFC3339 form of the
+// caller-supplied end (BuildState is pure and never resolves it itself).
+func TestBuildStateSchedule(t *testing.T) {
+	endsAt := time.Date(2026, 9, 13, 14, 56, 0, 0, time.UTC)
+	msg, err := testConfig().BuildState(sampleTelemetry(), 0, Setpoints{
+		Slots:       touSlots(),
+		BoostEndsAt: endsAt,
+	})
+	if err != nil {
+		t.Fatalf("BuildState: %v", err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(msg.Payload, &got); err != nil {
+		t.Fatalf("bad payload: %v", err)
+	}
+	if got["tou_window"] != "23:31–05:29" {
+		t.Errorf("tou_window = %v, want 23:31–05:29", got["tou_window"])
+	}
+	if got["boost"] != "Charge until 14:56" {
+		t.Errorf("boost = %v, want Charge until 14:56", got["boost"])
+	}
+	if got["boost_ends_at"] != endsAt.Format(time.RFC3339) {
+		t.Errorf("boost_ends_at = %v, want %s", got["boost_ends_at"], endsAt.Format(time.RFC3339))
+	}
+}
+
+// TestBuildStateScheduleUnset covers an unconfigured schedule: tou_window and
+// boost_ends_at marshal as JSON null rather than being omitted, because Home
+// Assistant needs the keys present to resolve the entities to "unknown".
+func TestBuildStateScheduleUnset(t *testing.T) {
+	msg, err := testConfig().BuildState(sampleTelemetry(), 0, Setpoints{})
+	if err != nil {
+		t.Fatalf("BuildState: %v", err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(msg.Payload, &got); err != nil {
+		t.Fatalf("bad payload: %v", err)
+	}
+	for _, key := range []string{"tou_window", "boost", "boost_ends_at"} {
+		if _, present := got[key]; !present {
+			t.Errorf("state is missing key %q; it must never be omitted", key)
+		}
+	}
+	if got["tou_window"] != nil {
+		t.Errorf("tou_window = %v, want null", got["tou_window"])
+	}
+	if got["boost_ends_at"] != nil {
+		t.Errorf("boost_ends_at = %v, want null", got["boost_ends_at"])
+	}
+	if got["boost"] != "Off" {
+		t.Errorf("boost = %v, want Off", got["boost"])
 	}
 }

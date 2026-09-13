@@ -88,6 +88,9 @@ TDD throughout; godog `.feature` coverage where behaviour is observable.
 
 Exit criteria for each phase are on its GitHub issue.
 
+Post-rebuild, additive feature work continues under further issues: Tariff &
+Boost (#27 done; #28 B1/B2).
+
 ## Config (env var catalog)
 
 `MODE` (`mock|live`), `INVERTER_IP`, `INVERTER_SERIAL` (datalogger/WiFi-stick

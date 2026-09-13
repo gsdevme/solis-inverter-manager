@@ -42,7 +42,7 @@ The thin Python transport sidecar (Phase 2, #19). See
 
 Phase 4 (#20/#21) is **read-only** discovery + state + availability. See
 [`03-mqtt-ha-discovery.md`](03-mqtt-ha-discovery.md) for the full topic scheme,
-payload shapes and the 33-entity table.
+payload shapes and the 36-entity table.
 
 - **REQ-HA-01** Discovery: one **retained**, QoS-1 config per entity at
   `<HA_DISCOVERY_PREFIX>/<component>/<serial>_<key>/config` (object_id form);
@@ -52,8 +52,10 @@ payload shapes and the 33-entity table.
   → `homeassistant/discovery.go`, `homeassistant/entities.go`, `publisher/publisher.go`
 - **REQ-HA-02** State: a single **retained**, QoS-1 JSON document at `<base>/state`;
   every entity reads it via `value_template {{ value_json.<key> }}` (binary_sensor
-  via `{{ 'ON' if value_json.<key> else 'OFF' }}`); the state DTO's json tags equal
-  the 33-entity key set exactly. `rtc` is RFC3339; `rtc_drift` is seconds.
+  via `{{ 'ON' if value_json.<key> else 'OFF' }}`); the state DTO's json tags are
+  the 36 read-only entity keys plus the three control-readback fields
+  (`set_charge_current`, `set_discharge_current`, `optimal_income`) — 39 tags.
+  `rtc` is RFC3339; `rtc_drift` is seconds.
   → `homeassistant/state.go`, `homeassistant/entities.go`
 - **REQ-HA-03** Entity classes per the `03` table; **daily** energy counters use
   `state_class: total`, **lifetime** counters `total_increasing`; signed
@@ -109,6 +111,21 @@ See the write-path sections of
   command entities are **omitted from discovery**, the command topic is not
   subscribed, and RTC auto-sync is disabled (it needs the write path).
   → `internal/homeassistant`, `internal/controls`, `internal/scheduler`
+- **REQ-HA-14** Derived schedule sensors `tou_window`, `boost`, `boost_ends_at`:
+  read-only in B1 (no writes). The setpoint holding read grows to 61 registers
+  (`43110`–`43170`) to also cover timed slots 1–3; slot 3 is reserved as the
+  boost slot. `tou_window` is slots 1–2 joined at midnight when slot 2 has a
+  charge window meeting slot 1's end there; slot 1 alone when slot 2's charge
+  window is unset; and `null` when slot 1 is unset, or both are set but do not
+  meet at midnight. `tou_window`/`boost_ends_at` are JSON `null` when unset;
+  `boost` is `"Off"`/`"Charge until HH:MM"`/`"Discharge until HH:MM"`. `boost`
+  reflects the slot-3 *configuration*, not whether the window is currently
+  running; a `boost_ends_at` in the past means the configured window has
+  elapsed and slot 3 has not been cleared (B2 adds the write path that clears
+  it). An end time of `00:00` means end-of-day, so `boost_ends_at` resolves to
+  the next midnight. →
+  `internal/schedule`, `internal/homeassistant/state.go`,
+  `internal/controls/setpoints.go`
 
 ## Scheduling (`internal/scheduler`, `04-polling-scheduling.md`)
 

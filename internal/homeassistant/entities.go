@@ -129,6 +129,12 @@ func Entities() []Entity {
 		{Component: Sensor, Key: "rtc", Name: "RTC", DeviceClass: "timestamp", Category: "diagnostic"},
 		{Component: Sensor, Key: "rtc_drift", Name: "RTC drift", DeviceClass: "duration", Unit: "s", Category: "diagnostic"},
 
+		// Derived schedule. Read-only in B1: these render the timed slots, which
+		// nothing writes yet, so they carry no Command.
+		{Component: Sensor, Key: "tou_window", Name: "Time-of-use window"},
+		{Component: Sensor, Key: "boost", Name: "Boost"},
+		{Component: Sensor, Key: "boost_ends_at", Name: "Boost ends at", DeviceClass: "timestamp"},
+
 		// Writable controls. Gated behind Config.ControlsEnabled in BuildDiscovery;
 		// always present in this catalogue so the state round-trip stays exhaustive.
 		{Component: Number, Key: "set_charge_current", Name: "Set charge current", Command: true, Min: 0, Max: 60, Step: 0.1, Mode: "box", Unit: "A"},

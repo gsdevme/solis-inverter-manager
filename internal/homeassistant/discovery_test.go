@@ -194,12 +194,12 @@ func TestDiscoveryBareDiagnosticSensors(t *testing.T) {
 }
 
 // TestDiscoveryControlsDisabledByDefault covers the Phase-4 behaviour: with
-// ControlsEnabled unset, only the 33 read-only entities are published and no
+// ControlsEnabled unset, only the 36 read-only entities are published and no
 // message carries a command_topic.
 func TestDiscoveryControlsDisabledByDefault(t *testing.T) {
 	byTopic := mustBuildDiscoveryFor(t, testConfig())
-	if len(byTopic) != 33 {
-		t.Fatalf("got %d discovery messages, want 33", len(byTopic))
+	if len(byTopic) != 36 {
+		t.Fatalf("got %d discovery messages, want 36", len(byTopic))
 	}
 	for topic, p := range byTopic {
 		if _, present := p["command_topic"]; present {
@@ -222,8 +222,8 @@ func TestDiscoveryControlsEnabled(t *testing.T) {
 	c := testConfig()
 	c.ControlsEnabled = true
 	byTopic := mustBuildDiscoveryFor(t, c)
-	if len(byTopic) != 37 {
-		t.Fatalf("got %d discovery messages, want 37", len(byTopic))
+	if len(byTopic) != 40 {
+		t.Fatalf("got %d discovery messages, want 40", len(byTopic))
 	}
 
 	num := byTopic["homeassistant/number/1234567890_set_charge_current/config"]

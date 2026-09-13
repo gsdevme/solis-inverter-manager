@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/gsdevme/solis-inverter-manager/internal/inverter"
+	"github.com/gsdevme/solis-inverter-manager/internal/schedule"
 )
 
 // State is the flat state document published to the shared state topic. Every
@@ -53,17 +54,31 @@ type State struct {
 	RTC             string  `json:"rtc"`
 	RTCDrift        float64 `json:"rtc_drift"`
 
+	// The derived schedule sensors. TouWindow and BoostEndsAt are pointers and
+	// carry no omitempty, so an unconfigured schedule publishes an explicit null
+	// and Home Assistant resolves the entity to "unknown" rather than keeping a
+	// stale value.
+	TouWindow   *string `json:"tou_window"`
+	Boost       string  `json:"boost"`
+	BoostEndsAt *string `json:"boost_ends_at"`
+
 	SetChargeCurrent    float64 `json:"set_charge_current"`
 	SetDischargeCurrent float64 `json:"set_discharge_current"`
 	OptimalIncome       string  `json:"optimal_income"`
 }
 
 // Setpoints is the current writable-control state, read from the holding bank
-// by the caller and folded into the shared state document.
+// by the caller and folded into the shared state document. Slots carries the
+// three timed slots the derived schedule sensors are rendered from, and
+// BoostEndsAt the boost's resolved end instant — resolved by the caller, because
+// this package must not read the wall clock; it is the zero time when no boost
+// is configured.
 type Setpoints struct {
 	SetChargeCurrent    float64
 	SetDischargeCurrent float64
 	OptimalIncome       bool
+	Slots               inverter.TimedSlots
+	BoostEndsAt         time.Time
 }
 
 // BuildState marshals a decoded Telemetry (plus the externally computed clock
@@ -115,6 +130,10 @@ func (c Config) BuildState(t inverter.Telemetry, drift time.Duration, sp Setpoin
 		RTC:             t.Time.Format(time.RFC3339),
 		RTCDrift:        drift.Seconds(),
 
+		TouWindow:   touWindowLabel(sp.Slots),
+		Boost:       schedule.BoostOf(sp.Slots).String(),
+		BoostEndsAt: timestampLabel(sp.BoostEndsAt),
+
 		SetChargeCurrent:    sp.SetChargeCurrent,
 		SetDischargeCurrent: sp.SetDischargeCurrent,
 		OptimalIncome:       optimalIncome,
@@ -124,6 +143,28 @@ func (c Config) BuildState(t inverter.Telemetry, drift time.Duration, sp Setpoin
 		return Message{}, fmt.Errorf("marshal state: %w", err)
 	}
 	return Message{Topic: c.StateTopic(), Payload: body}, nil
+}
+
+// touWindowLabel renders the Time-of-Use charge window as "23:31–05:29", or nil
+// when the slots hold no recognisable Time-of-Use schedule, so an unconfigured
+// inverter publishes null instead of an invented window.
+func touWindowLabel(slots inverter.TimedSlots) *string {
+	window, ok := schedule.ToU(slots)
+	if !ok {
+		return nil
+	}
+	label := schedule.FormatWindow(window)
+	return &label
+}
+
+// timestampLabel renders an instant as the RFC3339 string a timestamp
+// device-class sensor expects, or nil for the zero time (no value).
+func timestampLabel(at time.Time) *string {
+	if at.IsZero() {
+		return nil
+	}
+	label := at.Format(time.RFC3339)
+	return &label
 }
 
 // workModeLabel renders a WorkMode as a stable human label. The two named

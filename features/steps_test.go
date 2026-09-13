@@ -19,6 +19,7 @@ import (
 	"github.com/gsdevme/solis-inverter-manager/internal/homeassistant"
 	"github.com/gsdevme/solis-inverter-manager/internal/inverter"
 	"github.com/gsdevme/solis-inverter-manager/internal/publisher"
+	"github.com/gsdevme/solis-inverter-manager/internal/schedule"
 	"github.com/gsdevme/solis-inverter-manager/internal/scheduler"
 	"github.com/gsdevme/solis-inverter-manager/internal/server"
 )
@@ -426,6 +427,49 @@ func (w *world) stateReportsString(key, want string) error {
 	return nil
 }
 
+// --- Readable schedule steps ---
+
+// setpointsReadAt reads the whole setpoint block from the fake holding bank and
+// maps it onto the Home Assistant DTO, resolving the boost's end against the
+// instant named in the step. It mirrors serve.go's unexported toHASetpoints,
+// which this package cannot reach, so the scenarios exercise the same derivation
+// with a fixed clock instead of the wall clock.
+func (w *world) setpointsReadAt(at string) error {
+	now, err := time.Parse(time.RFC3339, at)
+	if err != nil {
+		return fmt.Errorf("parse %q as RFC3339: %w", at, err)
+	}
+	sp, err := controls.ReadSetpoints(context.Background(), w.hrw)
+	if err != nil {
+		return err
+	}
+	w.sp = homeassistant.Setpoints{
+		SetChargeCurrent:    sp.SetChargeCurrent,
+		SetDischargeCurrent: sp.SetDischargeCurrent,
+		OptimalIncome:       sp.OptimalIncome,
+		Slots:               sp.Slots,
+		BoostEndsAt:         schedule.BoostOf(sp.Slots).EndsAt(now),
+	}
+	return nil
+}
+
+// stateReportsNull asserts the key is published with an explicit JSON null, so
+// the entity resolves to "unknown" rather than being absent or stale.
+func (w *world) stateReportsNull(key string) error {
+	doc, err := w.stateDoc()
+	if err != nil {
+		return err
+	}
+	got, ok := doc[key]
+	if !ok {
+		return fmt.Errorf("state doc missing key %q", key)
+	}
+	if got != nil {
+		return fmt.Errorf("%s = %#v, want null", key, got)
+	}
+	return nil
+}
+
 // --- Resilient scheduling / readiness steps ---
 
 // immediateAfter fires the backoff channel instantly, so retries run synchronously
@@ -512,7 +556,10 @@ func TestFeatures(t *testing.T) {
 			ctx.Step(`^the writable controls read charge ([-\d.]+) A, discharge ([-\d.]+) A, optimal income (ON|OFF)$`, w.controlsRead)
 			ctx.Step(`^a poll is collected and state is published with those setpoints$`, w.stateWithSetpoints)
 			ctx.Step(`^the state document reports (set_charge_current|set_discharge_current) as ([-\d.]+)$`, w.stateReportsNumber)
-			ctx.Step(`^the state document reports (optimal_income) as "([^"]*)"$`, w.stateReportsString)
+			ctx.Step(`^the state document reports (optimal_income|tou_window|boost|boost_ends_at) as "([^"]*)"$`, w.stateReportsString)
+
+			ctx.Step(`^the setpoints are read from the holding bank at (\S+)$`, w.setpointsReadAt)
+			ctx.Step(`^the state document reports (\w+) as null$`, w.stateReportsNull)
 
 			ctx.Step(`^a resilient scheduler whose inverter fails the first (\d+) reads and a failure threshold of (\d+)$`, w.resilientScheduler)
 			ctx.Step(`^the scheduler completes (\d+) polls?$`, w.schedulerCompletesPolls)

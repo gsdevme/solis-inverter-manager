@@ -16,6 +16,7 @@ import (
 	"github.com/gsdevme/solis-inverter-manager/internal/inverter"
 	"github.com/gsdevme/solis-inverter-manager/internal/mqtt"
 	"github.com/gsdevme/solis-inverter-manager/internal/publisher"
+	"github.com/gsdevme/solis-inverter-manager/internal/schedule"
 	"github.com/gsdevme/solis-inverter-manager/internal/scheduler"
 	"github.com/gsdevme/solis-inverter-manager/internal/server"
 	"github.com/gsdevme/solis-inverter-manager/internal/sidecarclient"
@@ -45,14 +46,29 @@ func (f publisherFunc) PublishState(ctx context.Context, tel inverter.Telemetry,
 }
 
 // toHASetpoints maps the controls-package setpoints (read from the holding bank)
-// onto the homeassistant DTO folded into the shared state document. The fields
-// are identical; this keeps the two packages decoupled at the serve seam.
-func toHASetpoints(sp controls.Setpoints) homeassistant.Setpoints {
+// onto the homeassistant DTO folded into the shared state document, keeping the
+// two packages decoupled at the serve seam. The boost's end instant is resolved
+// here against now, because the homeassistant package is pure and must not read
+// the wall clock.
+func toHASetpoints(sp controls.Setpoints, now time.Time) homeassistant.Setpoints {
 	return homeassistant.Setpoints{
 		SetChargeCurrent:    sp.SetChargeCurrent,
 		SetDischargeCurrent: sp.SetDischargeCurrent,
 		OptimalIncome:       sp.OptimalIncome,
+		Slots:               sp.Slots,
+		BoostEndsAt:         schedule.BoostOf(sp.Slots).EndsAt(now),
 	}
+}
+
+// touWindowAttr renders the Time-of-Use window for the no-broker telemetry log,
+// using the same derivation as the state document and reading "unset" where that
+// publishes null.
+func touWindowAttr(slots inverter.TimedSlots) string {
+	window, ok := schedule.ToU(slots)
+	if !ok {
+		return "unset"
+	}
+	return schedule.FormatWindow(window)
 }
 
 func runServe(ctx context.Context) error {
@@ -135,7 +151,7 @@ func runServe(ctx context.Context) error {
 		if sp, err := controls.ReadSetpoints(ctx, wrapper); err != nil {
 			logger.Warn("read setpoints failed; reusing last-known setpoints", "err", err)
 		} else {
-			haSp = toHASetpoints(sp)
+			haSp = toHASetpoints(sp, now())
 		}
 		return tel, haSp, nil
 	}
@@ -155,6 +171,8 @@ func runServe(ctx context.Context) error {
 				"set_charge_current", haSp.SetChargeCurrent,
 				"set_discharge_current", haSp.SetDischargeCurrent,
 				"optimal_income", haSp.OptimalIncome,
+				"tou_window", touWindowAttr(haSp.Slots),
+				"boost", schedule.BoostOf(haSp.Slots).String(),
 			)
 			return nil
 		}

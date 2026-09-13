@@ -128,6 +128,12 @@ so the two reads need no merging.
 | 43151–43160 | Timed slot 2: charge/discharge H/M windows at slot-1 offsets +2..+9; leading pair (43151/52) unconfirmed, currents are global (43141/43142) | U16×10 | as slot 1 | R/W |
 | 43161–43170 | Timed slot 3: as slot 2 (windows at +2..+9; 43161/62 unconfirmed) | U16×10 | as slot 1 | R/W |
 
+The manager reads slots 1–3 (`43141`–`43170`) on **every poll**, alongside
+`43110`/`43141`/`43142`, in one `ReadHolding(43110, 61)` frame. Slots 1–2 join at
+midnight into the owner's Time-of-Use window; slot 3 is the boost slot. See
+`docs/specs/03-mqtt-ha-discovery.md` for the derived `tou_window`/`boost`/
+`boost_ends_at` sensors.
+
 ## Work-mode bitfield (43110)
 
 Reads back at **both** `43110` (holding) and `33132` (input). A `uint16` bitfield.
