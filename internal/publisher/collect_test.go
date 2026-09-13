@@ -33,7 +33,7 @@ func (f *fakeReader) ReadInput(_ context.Context, addr, count int) ([]uint16, er
 
 func TestCollectTwoBlocks(t *testing.T) {
 	const (
-		regBatterySOC = 33139 // in block 1
+		regBatterySOC = 33139 // in block 2
 		wantSOC       = 42
 	)
 	f := &fakeReader{regs: map[int]uint16{regBatterySOC: wantSOC}}
@@ -43,7 +43,7 @@ func TestCollectTwoBlocks(t *testing.T) {
 		t.Fatalf("Collect: %v", err)
 	}
 
-	wantCalls := []readCall{{33022, 125}, {33147, 29}}
+	wantCalls := []readCall{{33022, 100}, {33122, 54}}
 	if len(f.calls) != len(wantCalls) {
 		t.Fatalf("ReadInput called %d times, want %d: %v", len(f.calls), len(wantCalls), f.calls)
 	}

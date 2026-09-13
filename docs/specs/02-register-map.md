@@ -91,9 +91,22 @@ battery current × battery voltage; grid S32 ≈ external meter reading. See
 findings.md for the pinned live cross-checks.
 
 **Block reads.** The decoder consumes raw slices from the sidecar. Group reads
-into contiguous blocks (Modbus `count` ≤ 125 per read — enforced by the sidecar)
-rather than one register at a time; the exact poll grouping is a Phase 6 concern,
-but decoders MUST accept a base address + slice so a block read can be sliced.
+into contiguous blocks rather than one register at a time; decoders MUST accept a
+base address + slice so a block read can be sliced.
+
+The live Solarman datalogger NAKs any single read wider than ~100 registers with
+`illegal_address` (probed: `33022+100` OK, `33022+110` NAK) — a **stricter** bound
+than the sidecar's 125-register wire cap (`REQ-SD-07`). The manager therefore reads
+the telemetry bank (33022–33175) as **two blocks of ≤ 100**, split at `33121|33122`
+so no multi-word value straddles the boundary:
+
+- block 1 = `{33022, 100}` → covers `33022..33121`
+- block 2 = `{33122, 54}` → covers `33122..33175`
+
+The `33121|33122` split avoids the 6-word RTC block (33022–33027) and every U32/S32
+pair (33057·58, 33079·80, 33130·31, 33149·50, 33161·62, 33165·66, 33169·70,
+33173·74). `Snapshot` resolves each register by absolute address across the blocks,
+so the two reads need no merging.
 
 ## Holding registers (fc03 read / fc06 write)
 

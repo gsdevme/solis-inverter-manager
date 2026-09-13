@@ -160,11 +160,15 @@ Amps write encoding: `int(round(amps, 1) * 10)`, fc06. Inverter accepts up to
 | 7 | ~120 s setpoint commit/revert | **No revert** for 43141 (persisted 130 s) |
 | 8 | SOH validity (33140) | Reports a real value (97 %) on this unit |
 | 9 | Amps write limit | Unit allows 100 A; HA control clamped 0–60 A per plan |
+| 10 | Max single-read width | Datalogger NAKs `illegal_address` above ~100 regs (probed: `ReadInput(33022,125)` NAK; `33022+100` OK, `33022+110` NAK). Manager reads the telemetry bank as two blocks of ≤100 (split `33121\|33122`); stricter than the sidecar's 125 wire cap |
 
 ## Additional registers captured (full sweep)
 
-The entire range **input 33000–33304** and **holding 43000–43195** reads cleanly
-(no illegal-address errors). Full raw dump: `fixtures/live-snapshot-full-sweep.json`.
+The entire range **input 33000–33304** and **holding 43000–43195** is *addressable*
+and reads cleanly when swept in narrow reads — no address is invalid. This is about
+address validity, not read *width*: a single read wider than ~100 registers NAKs
+`illegal_address` regardless (see ambiguity #10). Full raw dump:
+`fixtures/live-snapshot-full-sweep.json`.
 Notable extras beyond the confirmed map above (decode as future features permit):
 
 - **33000–33003** — product/model/firmware codes (`245,176,65,1`).
