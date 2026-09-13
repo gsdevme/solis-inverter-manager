@@ -1,120 +1,80 @@
 # Solis Inverter Manager
 
-## Running
+A Go orchestrator + thin Python sidecar that reads a **Solis RHI-3.6K-48ES-5G**
+hybrid inverter over a **Solarman V5** datalogger (TCP `:8899`) and republishes
+telemetry to **MQTT** with **Home Assistant autodiscovery**, plus native HA controls
+(charge/discharge amps, work mode, RTC sync) written back to the inverter behind a
+read-before-write flash-wear guard.
 
-```bash
-# Quickly running read-all will confirm modbus connections are working
-docker run --rm \
--e INVERTER_SERIAL=1111 \
--e INVERTER_IP=127.0.0.1 \
-gsdevme/solis-inverter-manager:latest read-all 
+## Architecture
 
-# Running the poller/mqtt publisher
-docker run --rm \
--e INVERTER_SERIAL=1111 \
--e INVERTER_IP=127.0.0.1 \
--e MQTT_HOST=127.0.0.1 \
-gsdevme/solis-inverter-manager:latest
+Two containers, one pod:
+
+- **manager** (Go) — owns all register semantics. Polls on an interval, decodes,
+  publishes HA discovery + a single retained state document + availability, and
+  handles inbound HA command topics. Exposes `/healthz` and `/readyz` on `:8080`.
+- **sidecar** (Python) — a dumb Solarman V5 transport. Holds one persistent socket
+  with a single lock, exposes generic register read/write RPCs over localhost
+  `:8081`. It has no inverter knowledge and never talks to MQTT.
+
+The manager reaches the sidecar over `SIDECAR_URL`; only the sidecar opens the
+datalogger socket. See [`docs/specs/`](docs/specs/) for the full specification
+(source of truth) and [`docs/plans/rebuild.md`](docs/plans/rebuild.md) for the
+architecture and phase roadmap.
+
+## Run it locally
+
+The full stack runs with no inverter hardware — `MODE=mock` serves canned Phase 0
+fixtures end to end.
+
+```sh
+cp .env.dist .env                 # ships MODE=mock; edit for a live run
+docker compose up                 # mqtt + sidecar(mock) + manager
+
+# watch discovery + retained state land on the broker
+docker compose exec mqtt mosquitto_sub -t '#' -v
+
+# health / readiness
+curl -s localhost:8080/healthz    # 200 ok
+curl -s localhost:8080/readyz     # 200 ready after the first successful poll
 ```
 
-<img width="510" alt="Screenshot 2023-04-09 at 20 21 31" src="https://user-images.githubusercontent.com/319498/230792453-fc59532c-34b2-4f45-b341-40e12b425764.png">
-<img width="499" alt="Screenshot 2023-04-09 at 20 21 25" src="https://user-images.githubusercontent.com/319498/230792454-825c0761-5ec5-4405-a7a3-a9d1a2e693e3.png">
+For a **live** run, set `MODE=live` plus `INVERTER_IP` / `INVERTER_SERIAL` (the
+**datalogger** serial — a ~10-digit decimal) and your MQTT values in `.env`. The
+host must have a LAN route to the datalogger (`:8899`) and broker (`:1883`).
 
-```yaml
-action:
-  - service: mqtt.publish
-    data:
-      qos: 0
-      topic: solar_inverter_manager/set_charge
-      payload_template: "25"
+### Without containers
+
+```sh
+make build        # -> ./bin/solis-inverter-manager
+make test         # unit/integration
+make test-e2e     # godog acceptance suite
+make lint         # golangci-lint (pinned)
+
+MODE=mock HEALTH_ADDR=:8080 go run ./cmd serve
 ```
 
+Configuration is a single env catalogue (`MODE`, inverter/sidecar, polling,
+MQTT/HA, RTC-sync, health/logging) documented in
+[`docs/specs/05-config.md`](docs/specs/05-config.md) and [`.env.dist`](.env.dist).
+`INVERTER_SERIAL` and `MQTT_PASSWORD` are secrets and are redacted from logs.
 
-# Metrics endpoint
+## Images
 
-```json
-{
-  "meter": {
-    "battery": {
-      "percentage": 98,
-      "health": 100,
-      "voltage": 50.1,
-      "bms_voltage": 49.7,
-      "battery_power": 235,
-      "power_from_the_battery": 235,
-      "power_to_the_battery": 0,
-      "battery_power_amps": 4.7,
-      "charging": false
-    },
-    "grid_export": 0,
-    "grid_return": 0,
-    "grid_import": 0
-  },
-  "grid_charge": {
-    "grid_charging": 45.0,
-    "grid_charge_start": "2023-03-11T00:29:00",
-    "grid_charge_end": "2023-03-11T04:31:00",
-    "grid_discharging_amps": 0.0
-  },
-  "pv": {
-    "pv_now": 117,
-    "panels": {
-      "voltage": {
-        "pv1": 195.5,
-        "pv2": 195.1
-      },
-      "current": {
-        "pv1": 0.3,
-        "pv2": 0.3
-      }
-    },
-    "pv_yield_today": 9.8,
-    "pv_yield_this_month": 125,
-    "pv_yield_yesterday": 23.7,
-    "pv_yield_last_month": 163
-  },
-  "summary": {
-    "pv_self_consumption": 117,
-    "inverter_generation": 352
-  }
-}
+Both build from the repo root:
+
+```sh
+docker build -t solis-manager .                          # Go manager (distroless nonroot)
+docker build -f sidecar/Dockerfile -t solis-sidecar .    # Python sidecar
 ```
 
-# Usage
+Per the project guardrail, **no image is published until the owner approves** — CI
+builds both images build-only.
 
-```bash
-/app # python main.py serve
-INFO:     Started server process [197]
-INFO:     Waiting for application startup.
-INFO:     Application startup complete.
-INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
-INFO:     172.25.0.1:48920 - "GET /api/metrics HTTP/1.1" 200 OK
-INFO:     172.25.0.1:40948 - "GET /api/battery HTTP/1.1" 200 OK
-INFO:     172.25.0.1:40948 - "GET /api/pv HTTP/1.1" 200 OK
+## Deployment
 
-/app # python main.py read-battery
-{'percentage': 87, 'health': 100, 'voltage': 51.5, 'bms_voltage': 50.66, 'battery_power_in_watts': 1220, 'battery_power_in_amps': 23.7, 'charging': True}
-```
-
-# Screenshots
-![Screenshot 2023-03-11 at 10 15 03](https://user-images.githubusercontent.com/319498/224479150-0726bca7-7c46-450d-b5c3-60a8ed2e34d5.png)
-![Screenshot 2023-03-11 at 10 14 56](https://user-images.githubusercontent.com/319498/224479152-5b5e8af3-256b-4f75-9dac-c40552e66027.png)
-![Screenshot 2023-03-11 at 10 14 48](https://user-images.githubusercontent.com/319498/224479153-b08c7036-d5af-46a3-9098-1839060977b5.png)
-![Screenshot 2023-03-11 at 10 14 43](https://user-images.githubusercontent.com/319498/224479154-34827b1d-8f93-43b5-827a-f6b5f704a082.png)
-
-![Screenshot 2023-03-11 at 10 26 48](https://user-images.githubusercontent.com/319498/224479166-3f659c57-8f44-4225-a238-8efe0f166de8.png)
-
-
-
-# Development
-
-```
-# start the dev environment
-make start
-
-# enter the shell
-make shell
-
-# install the deps
-make install
-```
+Kubernetes manifests are **not** carried in this repo; cluster deployment is managed
+via GitOps (Helm/Flux) in a separate infrastructure repo. The intended manifest
+shape — two-container pod, ConfigMap/Secret split, probe wiring, security context,
+termination grace — is documented as reference examples in
+[`docs/specs/08-deployment.md`](docs/specs/08-deployment.md).

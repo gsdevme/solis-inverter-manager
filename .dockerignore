@@ -4,5 +4,4 @@ bin/
 .claude
 .env
 *.md
-infrastructure
 __pycache__

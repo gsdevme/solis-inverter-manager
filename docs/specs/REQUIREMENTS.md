@@ -183,5 +183,36 @@ health-driven readiness.
 
 ## Deployment (`08-deployment.md`)
 
-- TODO **REQ-DP-\***: two-container pod; manager + sidecar images; CI/CD; module
-  path `github.com/gsdevme/solis-inverter-manager`, `go 1.27`. → `go.mod`, CI
+Phase 7 (#24) packages the two-container service. See
+[`08-deployment.md`](08-deployment.md) for the full topology, probe wiring, and the
+reference manifests.
+
+- **REQ-DP-01** Two-container pod (manager + sidecar), **single replica**; the
+  manager reaches the sidecar over loopback (`SIDECAR_URL=http://127.0.0.1:8081`),
+  and only the sidecar opens the `:8899` datalogger socket. → `08-deployment.md`
+- **REQ-DP-02** Manager image: two-stage `golang:1.27` → `distroless/static:nonroot`,
+  static `CGO_ENABLED=0` binary, `EXPOSE 8080`, non-root, default `MODE=live`,
+  `CMD serve`. → `Dockerfile`
+- **REQ-DP-03** Sidecar image: `python:3.12-slim` + `pysolarmanv5`, localhost HTTP on
+  `:8081`, no MQTT, built from the repo root (fixtures for `MODE=mock`).
+  → `sidecar/Dockerfile`
+- **REQ-DP-04** Probes: manager liveness `GET /healthz:8080` + readiness
+  `GET /readyz:8080` (scheduler-driven, `REQ-LC-09`); sidecar liveness
+  `GET /health:8081` (`REQ-SD-04`). `/readyz` is the authoritative readiness signal,
+  not the ~40s-delayed MQTT Will. → `08-deployment.md`
+- **REQ-DP-05** Config split: non-secret env in a ConfigMap, `INVERTER_SERIAL` +
+  `MQTT_PASSWORD` in a Secret; both via `envFrom`. Hardened securityContext
+  (`runAsNonRoot`, `allowPrivilegeEscalation:false`, drop `ALL` caps, seccomp
+  `RuntimeDefault`; manager `readOnlyRootFilesystem:true`);
+  `terminationGracePeriodSeconds: 30` covers the graceful-shutdown drain
+  (`REQ-LC-10`). → `08-deployment.md`
+- **REQ-DP-06** CI: PR gate builds **both** images build-only (`push: false`, amd64);
+  release builds them multi-arch (amd64+arm64) via release-please, **also build-only
+  pending owner approval** — the **no-image-publish guardrail** holds until the owner
+  approves. → `.github/workflows/{ci,release}.yml`, `release-please-config.json`,
+  `.release-please-manifest.json`
+- **REQ-DP-07** Kubernetes manifests are **not** carried in this repo; cluster
+  deployment is managed via GitOps (Helm/Flux) in a separate infrastructure repo.
+  `08-deployment.md` documents the intended manifest shape as reference examples.
+- **REQ-DP-08** Module path `github.com/gsdevme/solis-inverter-manager`, `go 1.27`
+  (toolchain `go 1.27.0`). → `go.mod`

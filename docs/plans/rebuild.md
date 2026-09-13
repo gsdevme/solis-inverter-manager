@@ -84,7 +84,7 @@ TDD throughout; godog `.feature` coverage where behaviour is observable.
 | 4 — HA discovery + state (read-only) | #21 | ✅ done | autopaho, LWT+availability, device + read-only entities, retained state JSON, reconnect re-publish |
 | 5 — Writable controls | #22 | ✅ done | `number` (amps 0–60), `switch`/`select` (work mode 33/35), RTC sync; read-before-write + re-read confirm |
 | 6 — Scheduler | #23 | ✅ done | serialized ~60s poll, backoff, retained cache, failure-threshold readiness, injectable clock, opt-in threshold-gated RTC auto-sync |
-| 7 — Deployment | #24 | ⬜ | two-container Deployment + ConfigMap/Secret + probes, both Dockerfiles, docker-compose (incl. mosquitto), CI (build only) |
+| 7 — Deployment | #24 | ✅ done | manager `Dockerfile` (distroless nonroot) + sidecar image; full `docker-compose` stack (mqtt + sidecar + manager); CI `docker-build` (build-only) + release-please/release.yml (multi-arch, build-only pending approval); two-container pod, ConfigMap/Secret, probes documented as reference examples in `08-deployment.md` (manifests live in a separate GitOps/Helm/Flux repo) |
 
 Exit criteria for each phase are on its GitHub issue.
 
@@ -108,7 +108,10 @@ serial — numeric), `INVERTER_PORT` (8899), `INVERTER_SOCKET_TIMEOUT`,
 - **Live smoke:** both containers locally (compose) against the real inverter + a
   test MQTT broker; HA autodiscovery, sensors populate, entities go `unavailable`
   on LWT, controls write back and reflect on the next poll.
-- **Deploy dry-run:** `kubectl apply --dry-run=server`.
+- **Deploy:** manifests are not carried here — cluster deployment is GitOps
+  (Helm/Flux) in a separate infra repo; `docs/specs/08-deployment.md` documents the
+  intended manifest shape as reference examples. Local end-to-end runs via
+  `docker compose up`.
 
 ## Guardrails
 

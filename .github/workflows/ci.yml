@@ -1,11 +1,9 @@
 name: ci
 
-# Pull-request gate: run the full verification suite (lint/test/e2e).
-#
-# Phase 7 adds to this file a build-only Docker validation job (no push) for the
-# manager and sidecar images once their Dockerfiles exist, and a release.yml that
-# uses release-please + a multi-arch build/push to ghcr (GitHub Container
-# Registry). Until then this gate is checks-only so PRs get real Go verification.
+# Pull-request gate: the full Go verification suite (lint/test/e2e) plus a
+# build-only Docker validation (no push) that catches Dockerfile breakage in both
+# images before merge. Image publishing lives in release.yml and is itself
+# build-only pending owner approval (see the guardrail note there).
 on:
   pull_request:
     branches: [master]
@@ -21,3 +19,33 @@ jobs:
     permissions:
       contents: read
     uses: ./.github/workflows/checks.yml
+
+  docker-build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      # Build-only (push: false), native amd64 only: the emulated arm64 leg is slow
+      # and adds little Dockerfile-breakage signal for a static CGO_ENABLED=0
+      # GOOS=linux binary; the full multi-arch build happens at release time. Both
+      # images build from the repo root; scoped gha caches keep them independent.
+      - name: build manager image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile
+          push: false
+          platforms: linux/amd64
+          cache-from: type=gha,scope=manager
+          cache-to: type=gha,mode=max,scope=manager
+      - name: build sidecar image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: sidecar/Dockerfile
+          push: false
+          platforms: linux/amd64
+          cache-from: type=gha,scope=sidecar
+          cache-to: type=gha,mode=max,scope=sidecar
