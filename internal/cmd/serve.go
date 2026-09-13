@@ -12,6 +12,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/gsdevme/solis-inverter-manager/internal/config"
+	"github.com/gsdevme/solis-inverter-manager/internal/controls"
 	"github.com/gsdevme/solis-inverter-manager/internal/homeassistant"
 	"github.com/gsdevme/solis-inverter-manager/internal/inverter"
 	"github.com/gsdevme/solis-inverter-manager/internal/mqtt"
@@ -34,7 +35,19 @@ var serveCmd = &cobra.Command{
 type lastState struct {
 	mu   sync.Mutex
 	tel  inverter.Telemetry
+	sp   homeassistant.Setpoints
 	have bool
+}
+
+// toHASetpoints maps the controls-package setpoints (read from the holding bank)
+// onto the homeassistant DTO folded into the shared state document. The fields
+// are identical; this keeps the two packages decoupled at the serve seam.
+func toHASetpoints(sp controls.Setpoints) homeassistant.Setpoints {
+	return homeassistant.Setpoints{
+		SetChargeCurrent:    sp.SetChargeCurrent,
+		SetDischargeCurrent: sp.SetDischargeCurrent,
+		OptimalIncome:       sp.OptimalIncome,
+	}
 }
 
 func runServe(ctx context.Context) error {
@@ -66,12 +79,42 @@ func runServe(ctx context.Context) error {
 	logger.Info("health server listening", "addr", cfg.HealthAddr)
 
 	client := sidecarclient.New(cfg.SidecarURL)
+	// wrapper serializes every register call (input reads via publisher.Collect,
+	// holding read/writes via the command handler) on one mutex, because the
+	// sidecar's single socket cannot service concurrent Modbus transactions. The
+	// poll goroutine and the command-handler goroutine both use this wrapper — not
+	// the raw client.
+	wrapper := controls.NewLocking(client)
 	haCfg := homeassistant.Config{
 		DiscoveryPrefix: cfg.HADiscoveryPrefix,
 		TopicPrefix:     cfg.MQTTTopicPrefix,
 		Serial:          cfg.InverterSerial,
+		ControlsEnabled: cfg.ControlsEnabled,
 	}
 	cache := &lastState{}
+
+	// readState reads telemetry and the writable-control setpoints through the
+	// serialized wrapper, caches both, and returns them. A setpoints read failure
+	// is non-fatal: it logs and falls back to zero-value setpoints rather than
+	// dropping the telemetry publish. ok is false only when telemetry itself
+	// could not be read.
+	readState := func(ctx context.Context) (inverter.Telemetry, homeassistant.Setpoints, bool) {
+		tel, err := publisher.Collect(ctx, wrapper)
+		if err != nil {
+			logger.Warn("poll failed", "err", err)
+			return inverter.Telemetry{}, homeassistant.Setpoints{}, false
+		}
+		var haSp homeassistant.Setpoints
+		if sp, err := controls.ReadSetpoints(ctx, wrapper); err != nil {
+			logger.Warn("read setpoints failed", "err", err)
+		} else {
+			haSp = toHASetpoints(sp)
+		}
+		cache.mu.Lock()
+		cache.tel, cache.sp, cache.have = tel, haSp, true
+		cache.mu.Unlock()
+		return tel, haSp, true
+	}
 
 	// MQTT is required in live mode and optional in mock. When a broker URL is
 	// configured, connect and publish HA discovery + availability eagerly; the
@@ -87,6 +130,7 @@ func runServe(ctx context.Context) error {
 		svcPtr atomic.Pointer[publisher.Service]
 	)
 	if cfg.MQTTBrokerURL != "" {
+		commandTopic := haCfg.BaseTopic() + "/+/set"
 		republish := func(ctx context.Context) {
 			svc := svcPtr.Load()
 			if svc == nil {
@@ -99,11 +143,18 @@ func runServe(ctx context.Context) error {
 				logger.Warn("republish availability failed", "err", err)
 			}
 			cache.mu.Lock()
-			tel, have := cache.tel, cache.have
+			tel, sp, have := cache.tel, cache.sp, cache.have
 			cache.mu.Unlock()
 			if have {
-				if err := svc.PublishState(ctx, tel); err != nil {
+				if err := svc.PublishState(ctx, tel, sp); err != nil {
 					logger.Warn("republish state failed", "err", err)
+				}
+			}
+			// Re-subscribe on every reconnect (idempotent, like discovery) so the
+			// command topic survives a broker restart. Gated by CONTROLS_ENABLED.
+			if cfg.ControlsEnabled {
+				if err := mc.Subscribe(ctx, commandTopic); err != nil {
+					logger.Warn("resubscribe command topic failed", "topic", commandTopic, "err", err)
 				}
 			}
 		}
@@ -123,6 +174,32 @@ func runServe(ctx context.Context) error {
 		svcPtr.Store(publisher.New(mc, haCfg))
 		mc.SetOnConnectionUp(republish)
 
+		// Writable controls: install the command handler and subscribe to the
+		// command topic only when CONTROLS_ENABLED. When disabled, the 4 command
+		// entities are already omitted from discovery (haCfg.ControlsEnabled=false,
+		// ruling R1), so there is nothing to subscribe to and no handler is set.
+		if cfg.ControlsEnabled {
+			// refresh re-reads telemetry+setpoints through the wrapper and
+			// republishes state after any command that touched the inverter.
+			refresh := func(ctx context.Context) {
+				tel, haSp, ok := readState(ctx)
+				if !ok {
+					return
+				}
+				if svc := svcPtr.Load(); svc != nil {
+					if err := svc.PublishState(ctx, tel, haSp); err != nil {
+						logger.Warn("controls refresh: publish state failed", "err", err)
+					}
+				}
+			}
+			handler := controls.NewHandler(wrapper, logger, true, refresh)
+			// SetOnMessage installs a SYNCHRONOUS handler: the mqtt client invokes
+			// it inline (no goroutine), which serializes command dispatch and keeps
+			// the read-before-write guard's read/compare/write free of a TOCTOU
+			// race against a concurrent command.
+			mc.SetOnMessage(handler.OnMessage)
+		}
+
 		// Eager publish once after connect, in case the first connection-up fired
 		// before svcPtr was stored. Transient publish errors are logged, not fatal.
 		svc := svcPtr.Load()
@@ -131,6 +208,11 @@ func runServe(ctx context.Context) error {
 		}
 		if err := svc.PublishAvailability(ctx, true); err != nil {
 			logger.Warn("publish availability failed", "err", err)
+		}
+		if cfg.ControlsEnabled {
+			if err := mc.Subscribe(ctx, commandTopic); err != nil {
+				logger.Warn("subscribe command topic failed", "topic", commandTopic, "err", err)
+			}
 		}
 	}
 
@@ -144,17 +226,13 @@ func runServe(ctx context.Context) error {
 		defer ticker.Stop()
 
 		poll := func() {
-			tel, err := publisher.Collect(ctx, client)
-			if err != nil {
-				logger.Warn("poll failed", "err", err)
+			tel, haSp, ok := readState(ctx)
+			if !ok {
 				return
 			}
-			cache.mu.Lock()
-			cache.tel, cache.have = tel, true
-			cache.mu.Unlock()
 
 			if svc := svcPtr.Load(); svc != nil {
-				if err := svc.PublishState(ctx, tel); err != nil {
+				if err := svc.PublishState(ctx, tel, haSp); err != nil {
 					logger.Warn("publish state failed", "err", err)
 				}
 			} else {
@@ -164,6 +242,9 @@ func runServe(ctx context.Context) error {
 					"battery_power_w", tel.Battery.PowerW,
 					"pv_power_w", tel.PV.TotalPowerW,
 					"grid_power_w", tel.Grid.PowerW,
+					"set_charge_current", haSp.SetChargeCurrent,
+					"set_discharge_current", haSp.SetDischargeCurrent,
+					"optimal_income", haSp.OptimalIncome,
 				)
 			}
 			readyOnce.Do(func() { status.SetReady(true) })

@@ -52,6 +52,12 @@ type Config struct {
 	MQTTTopicPrefix   string
 	HADiscoveryPrefix string
 
+	// Controls
+	// ControlsEnabled gates the writable HA command entities and the command
+	// subscription. Defaults to true (absent/empty CONTROLS_ENABLED enables
+	// controls); set CONTROLS_ENABLED=false to run read-only.
+	ControlsEnabled bool
+
 	// Health & logging
 	HealthAddr string
 	LogLevel   string
@@ -136,6 +142,12 @@ func Load() (*Config, error) {
 		errs = append(errs, errors.New("FAILURE_THRESHOLD must be >= 1"))
 	}
 
+	controlsEnabled, err := parseBool("CONTROLS_ENABLED", true)
+	if err != nil {
+		errs = append(errs, err)
+	}
+	c.ControlsEnabled = controlsEnabled
+
 	if len(errs) > 0 {
 		return nil, errors.Join(errs...)
 	}
@@ -155,12 +167,12 @@ func (c *Config) String() string {
 		password = redacted
 	}
 	return fmt.Sprintf("Config{mode=%s inverterIP=%s inverterSerial=%s inverterPort=%d "+
-		"socketTimeout=%s sidecar=%s poll=%s maxRetries=%d failThreshold=%d broker=%s "+
-		"user=%s password=%s clientID=%s topicPrefix=%s haPrefix=%s health=%s log=%s/%s}",
+		"socketTimeout=%s sidecar=%s poll=%s maxRetries=%d failThreshold=%d controlsEnabled=%t "+
+		"broker=%s user=%s password=%s clientID=%s topicPrefix=%s haPrefix=%s health=%s log=%s/%s}",
 		c.Mode, c.InverterIP, serial, c.InverterPort, c.InverterSocketTimeout, c.SidecarURL,
-		c.PollInterval, c.PollMaxRetries, c.FailureThreshold, c.MQTTBrokerURL, c.MQTTUsername,
-		password, c.MQTTClientID, c.MQTTTopicPrefix, c.HADiscoveryPrefix, c.HealthAddr,
-		c.LogLevel, c.LogFormat)
+		c.PollInterval, c.PollMaxRetries, c.FailureThreshold, c.ControlsEnabled, c.MQTTBrokerURL,
+		c.MQTTUsername, password, c.MQTTClientID, c.MQTTTopicPrefix, c.HADiscoveryPrefix,
+		c.HealthAddr, c.LogLevel, c.LogFormat)
 }
 
 // LogValue implements slog.LogValuer so `logger.Info("...", "config", cfg)` emits
@@ -178,6 +190,7 @@ func (c *Config) LogValue() slog.Value {
 		slog.Duration("poll_interval", c.PollInterval),
 		slog.Int("poll_max_retries", c.PollMaxRetries),
 		slog.Int("failure_threshold", c.FailureThreshold),
+		slog.Bool("controls_enabled", c.ControlsEnabled),
 		slog.String("mqtt_broker_url", c.MQTTBrokerURL),
 		slog.String("mqtt_username", c.MQTTUsername),
 		slog.String("mqtt_password", redactSecret(c.MQTTPassword)),
@@ -217,6 +230,21 @@ func getInt(key string, def int) int {
 		return def
 	}
 	return n
+}
+
+// parseBool parses a boolean env var (via strconv.ParseBool, so 1/t/true/0/f/
+// false are all accepted, case-insensitively). An empty/unset value returns the
+// default; an unparseable value is a validation error.
+func parseBool(key string, def bool) (bool, error) {
+	v := os.Getenv(key)
+	if v == "" {
+		return def, nil
+	}
+	b, err := strconv.ParseBool(strings.TrimSpace(v))
+	if err != nil {
+		return def, fmt.Errorf("%s is not a valid boolean: %w", key, err)
+	}
+	return b, nil
 }
 
 func parseDuration(key string, def time.Duration) (time.Duration, error) {

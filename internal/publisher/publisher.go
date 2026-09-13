@@ -61,13 +61,14 @@ func (s *Service) PublishAvailability(ctx context.Context, online bool) error {
 	return nil
 }
 
-// PublishState publishes the retained JSON state document for a decoded reading.
-// The clock drift is computed here against the wall clock; Phase 6 will inject a
-// clock, but time.Now() is acceptable for Phase 4. A retained state doc restores
-// the last values to Home Assistant on reconnect.
-func (s *Service) PublishState(ctx context.Context, t inverter.Telemetry) error {
+// PublishState publishes the retained JSON state document for a decoded reading
+// and the current writable-control setpoints. The clock drift is computed here
+// against the wall clock; Phase 6 will inject a clock, but time.Now() is
+// acceptable for now. A retained state doc restores the last values to Home
+// Assistant on reconnect.
+func (s *Service) PublishState(ctx context.Context, t inverter.Telemetry, sp homeassistant.Setpoints) error {
 	drift := inverter.Drift(t.Time, time.Now())
-	msg, err := s.cfg.BuildState(t, drift)
+	msg, err := s.cfg.BuildState(t, drift, sp)
 	if err != nil {
 		return fmt.Errorf("build state: %w", err)
 	}

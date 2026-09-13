@@ -103,7 +103,7 @@ func TestPublishState(t *testing.T) {
 	tel.Battery.SOCPercent = 87
 	tel.Grid.PowerW = -1500
 
-	if err := svc.PublishState(context.Background(), tel); err != nil {
+	if err := svc.PublishState(context.Background(), tel, homeassistant.Setpoints{}); err != nil {
 		t.Fatalf("PublishState: %v", err)
 	}
 
