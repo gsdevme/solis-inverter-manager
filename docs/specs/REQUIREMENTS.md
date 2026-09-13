@@ -164,9 +164,15 @@ health-driven readiness.
   failures (counter resets on success; failures below the threshold hold the current
   state). `/readyz` reflects sidecar reachability transitively (an unreachable sidecar
   fails the poll). → `internal/server`, `internal/scheduler`, `cmd/serve.go`
-- **REQ-LC-10** Graceful shutdown: drain the scheduler first, then publish a retained
-  `offline` and disconnect the broker cleanly before stopping the health server. →
-  `cmd/serve.go`
+- **REQ-LC-10** Graceful shutdown is a **single authoritative teardown path** that
+  **both** exit branches (SIGTERM/SIGINT via `ctx.Done()` **and** a health-server
+  listen/serve error) funnel through, so teardown runs exactly once: drain the
+  scheduler first → publish retained `offline` → `Disconnect` (which **drains the
+  in-flight `OnConnectionUp` republish goroutine** — cancelling its serve-lifetime
+  context and waiting, bounded by the shutdown context — before the clean disconnect
+  that suppresses the Will) → stop the health server. The health-error branch cancels
+  the run context so the scheduler drains, then returns the health error; the signal
+  branch returns nil. → `cmd/serve.go`, `internal/mqtt/client.go`
 - **REQ-LC-08** `cmd/main.go` reports errors to stderr and exits non-zero. →
   `cmd/main.go`
 

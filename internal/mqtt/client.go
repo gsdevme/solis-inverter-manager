@@ -40,6 +40,17 @@ type Client struct {
 	mu    sync.Mutex
 	onUp  func(ctx context.Context)
 	onMsg func(ctx context.Context, topic string, payload []byte)
+
+	// hookCtx is the serve-lifetime context handed to each OnConnectionUp hook
+	// invocation; hookCancel cancels it on Disconnect so a slow republish is torn
+	// down rather than leaked. hookWG tracks in-flight hook goroutines so Disconnect
+	// can wait for them to return before closing the connection. hookClosing, set
+	// under mu, stops fireOnUp launching new hooks once Disconnect has begun — this
+	// serialises the WaitGroup Add against the drain's Wait so `-race` stays clean.
+	hookCtx     context.Context
+	hookCancel  context.CancelFunc
+	hookWG      sync.WaitGroup
+	hookClosing bool
 }
 
 // Connect parses the broker URL, builds the autopaho configuration (with LWT)
@@ -54,6 +65,10 @@ func Connect(ctx context.Context, opts Options) (*Client, error) {
 	}
 
 	c := &Client{logger: opts.Logger, onUp: opts.OnConnectionUp}
+	// Establish the hook context before NewConnection so the very first
+	// OnConnectionUp (which may fire from the transport goroutine as soon as the
+	// connection comes up) already has a cancellable context to run under.
+	c.hookCtx, c.hookCancel = context.WithCancel(context.Background())
 	cfg := c.buildClientConfig(u, opts)
 
 	cm, err := autopaho.NewConnection(ctx, cfg)
@@ -83,7 +98,7 @@ func (c *Client) buildClientConfig(u *url.URL, opts Options) autopaho.ClientConf
 		},
 		OnConnectionUp: func(_ *autopaho.ConnectionManager, _ *paho.Connack) {
 			opts.Logger.Info("mqtt connected")
-			c.fireOnUp(context.Background())
+			c.fireOnUp()
 		},
 		ClientConfig: paho.ClientConfig{
 			ClientID: opts.ClientID,
@@ -120,14 +135,25 @@ func (c *Client) SetOnConnectionUp(fn func(ctx context.Context)) {
 }
 
 // fireOnUp invokes the current OnConnectionUp hook in a goroutine, so it never
-// blocks the paho callback.
-func (c *Client) fireOnUp(ctx context.Context) {
+// blocks the paho callback. The goroutine runs under the serve-lifetime hookCtx
+// and is tracked by hookWG so Disconnect can cancel and drain it. Once Disconnect
+// has begun (hookClosing), no new hook is launched. Registering the WaitGroup Add
+// under mu — the same lock that guards the hookClosing check that Disconnect
+// flips — guarantees Add never races the drain's Wait.
+func (c *Client) fireOnUp() {
 	c.mu.Lock()
 	fn := c.onUp
-	c.mu.Unlock()
-	if fn != nil {
-		go fn(ctx)
+	if fn == nil || c.hookClosing {
+		c.mu.Unlock()
+		return
 	}
+	c.hookWG.Add(1)
+	ctx := c.hookCtx
+	c.mu.Unlock()
+	go func() {
+		defer c.hookWG.Done()
+		fn(ctx)
+	}()
 }
 
 // SetOnMessage registers or replaces the callback invoked for each inbound
@@ -181,7 +207,34 @@ func (c *Client) Subscribe(ctx context.Context, topicFilter string) error {
 	return nil
 }
 
-// Disconnect closes the connection cleanly, which suppresses the Last Will.
+// Disconnect drains any in-flight OnConnectionUp hook, then closes the connection
+// cleanly (which suppresses the Last Will). Draining before the clean disconnect
+// guarantees no republish goroutine can still be publishing after the transport
+// is torn down.
 func (c *Client) Disconnect(ctx context.Context) error {
+	c.drainHook(ctx)
 	return c.cm.Disconnect(ctx)
+}
+
+// drainHook cancels the reconnect-hook context and waits for any in-flight hook
+// goroutine to return, bounded by ctx (so a stuck hook cannot block shutdown past
+// the caller's deadline). It is split out from Disconnect so the cancel-and-drain
+// behaviour is unit-testable without a live ConnectionManager.
+func (c *Client) drainHook(ctx context.Context) {
+	c.mu.Lock()
+	c.hookClosing = true
+	cancel := c.hookCancel
+	c.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+	done := make(chan struct{})
+	go func() {
+		c.hookWG.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-ctx.Done():
+	}
 }

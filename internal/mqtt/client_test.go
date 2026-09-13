@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/url"
 	"testing"
+	"time"
 
 	"github.com/eclipse/paho.golang/paho"
 )
@@ -153,5 +154,80 @@ func TestConnectRejectsMalformedBrokerURL(t *testing.T) {
 	_, err := Connect(context.Background(), Options{BrokerURL: "://no-scheme"})
 	if err == nil {
 		t.Fatal("Connect(malformed URL) = nil error, want error")
+	}
+}
+
+// newHookClient builds a Client with a hook context but no ConnectionManager, so
+// the drain path can be exercised without standing up a broker. drainHook (unlike
+// Disconnect) never touches c.cm, so this is sufficient.
+func newHookClient() *Client {
+	c := &Client{}
+	c.hookCtx, c.hookCancel = context.WithCancel(context.Background())
+	return c
+}
+
+func TestDrainHookCancelsInFlightHookAndWaits(t *testing.T) {
+	c := newHookClient()
+
+	started := make(chan struct{})
+	finished := make(chan struct{})
+	sawCancel := false
+	c.SetOnConnectionUp(func(ctx context.Context) {
+		close(started)
+		<-ctx.Done() // block until Disconnect cancels the hook context
+		sawCancel = true
+		close(finished)
+	})
+
+	c.fireOnUp()
+	<-started // ensure the hook is genuinely in flight before draining
+
+	c.drainHook(context.Background())
+
+	// drainHook must not return until the in-flight hook has returned.
+	select {
+	case <-finished:
+	default:
+		t.Fatal("drainHook returned before the in-flight hook finished")
+	}
+	if !sawCancel {
+		t.Error("hook context was not cancelled during drain")
+	}
+}
+
+func TestDrainHookBoundedByContext(t *testing.T) {
+	c := newHookClient()
+
+	block := make(chan struct{})
+	c.SetOnConnectionUp(func(context.Context) { <-block }) // ignores cancellation
+	c.fireOnUp()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // already cancelled: drainHook must return promptly regardless
+
+	drained := make(chan struct{})
+	go func() {
+		c.drainHook(ctx)
+		close(drained)
+	}()
+	select {
+	case <-drained:
+	case <-time.After(time.Second):
+		t.Fatal("drainHook did not honour a cancelled context")
+	}
+	close(block) // release the stuck hook goroutine so it does not leak
+}
+
+func TestFireOnUpSkippedAfterClosing(t *testing.T) {
+	c := newHookClient()
+	c.drainHook(context.Background()) // no hook set: just flips hookClosing
+
+	fired := false
+	c.SetOnConnectionUp(func(context.Context) { fired = true })
+	c.fireOnUp() // must be a no-op once closing
+
+	c.hookWG.Wait() // returns immediately if nothing was launched
+	if fired {
+		t.Error("fireOnUp launched a hook after Disconnect began")
 	}
 }

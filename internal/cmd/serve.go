@@ -56,6 +56,12 @@ func toHASetpoints(sp controls.Setpoints) homeassistant.Setpoints {
 }
 
 func runServe(ctx context.Context) error {
+	// A cancellable child of the incoming context so the shutdown path can stop the
+	// scheduler itself — notably on the healthErr branch, where the parent ctx is
+	// not cancelled but teardown still needs to drain the scheduler goroutine.
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
 	cfg, err := config.Load()
 	if err != nil {
 		return fmt.Errorf("config: %w", err)
@@ -212,7 +218,6 @@ func runServe(ctx context.Context) error {
 			return fmt.Errorf("mqtt: %w", err)
 		}
 		svcPtr.Store(publisher.New(mc, haCfg))
-		mc.SetOnConnectionUp(republish)
 
 		// Writable controls: build the command handler only when CONTROLS_ENABLED.
 		// When disabled, the 4 command entities are already omitted from discovery
@@ -286,32 +291,47 @@ func runServe(ctx context.Context) error {
 		sched.Run(ctx)
 	}()
 
+	// shutdown is the single authoritative teardown path; both exit branches below
+	// funnel through it so teardown happens exactly once, in one place. Ordering is
+	// load-bearing: drain the scheduler FIRST (so no in-flight poll/command touches
+	// the client concurrently with Disconnect), then publish a retained "offline",
+	// then Disconnect — which itself drains any in-flight reconnect-republish
+	// goroutine before the clean disconnect that suppresses the Will — and finally
+	// stop the health server. It relies on ctx being cancelled so the scheduler
+	// goroutine returns and schedDone closes; ctx is already cancelled, so the final
+	// publishes use a fresh short-lived context.
+	shutdown := func() {
+		logger.Info("shutting down")
+		<-schedDone
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if mc != nil {
+			if svc := svcPtr.Load(); svc != nil {
+				if err := svc.PublishAvailability(shutdownCtx, false); err != nil {
+					logger.Warn("publish offline failed", "err", err)
+				}
+			}
+			if err := mc.Disconnect(shutdownCtx); err != nil {
+				logger.Warn("mqtt disconnect failed", "err", err)
+			}
+		}
+		if err := shutdownServer(healthSrv); err != nil {
+			logger.Warn("health server shutdown failed", "err", err)
+		}
+	}
+
 	logger.Info("manager running")
 	select {
 	case err := <-healthErr:
+		// The health server failed to listen/serve. Cancel so the scheduler drains,
+		// run the one teardown path, then surface the health error as the exit error.
+		cancel()
+		shutdown()
 		return fmt.Errorf("health server: %w", err)
 	case <-ctx.Done():
+		shutdown()
+		return nil
 	}
-	logger.Info("shutting down")
-
-	// Graceful shutdown: drain the scheduler FIRST so no in-flight poll/command can
-	// use the client concurrently with Disconnect, then publish a retained "offline"
-	// and disconnect the broker cleanly before stopping the health server. ctx is
-	// already cancelled, so use a fresh short-lived context for these final publishes.
-	<-schedDone
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if mc != nil {
-		if svc := svcPtr.Load(); svc != nil {
-			if err := svc.PublishAvailability(shutdownCtx, false); err != nil {
-				logger.Warn("publish offline failed", "err", err)
-			}
-		}
-		if err := mc.Disconnect(shutdownCtx); err != nil {
-			logger.Warn("mqtt disconnect failed", "err", err)
-		}
-	}
-	return shutdownServer(healthSrv)
 }
 
 func shutdownServer(srv *http.Server) error {

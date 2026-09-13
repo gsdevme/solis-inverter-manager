@@ -197,7 +197,20 @@ retain flag varies:
   same topic.
 - On **graceful shutdown** the manager publishes **`offline` retained**
   explicitly, then **disconnects cleanly** — a clean disconnect suppresses the
-  Will, so the explicit `offline` is what remains retained.
+  Will, so the explicit `offline` is what remains retained. `Disconnect` first
+  drains any in-flight reconnect-republish goroutine (see below), so nothing
+  republishes `online` after the explicit `offline`.
+
+### Will delay is an intentional flap debounce
+
+The Will has a **delay interval of 2× keepalive** (`keepAliveSeconds` = 20, so
+**~40s**). This is deliberate: on an *unclean* loss (crash, network partition, pod
+OOM-kill) the broker waits ~40s before publishing the retained `offline` Will,
+debouncing brief flaps so HA does not churn every entity to `unavailable` and back
+on a transient blip. The trade-off — accepted by the owner — is that HA may show a
+genuinely dead pod as `online` for up to ~40s after it dies. A *graceful* shutdown
+does not pay this cost: the explicit `offline` is published immediately and the clean
+disconnect suppresses the Will entirely.
 
 ## Reconnect republish
 
@@ -211,6 +224,22 @@ hook (`republish` in `serve.go`) republishes, in order:
 This makes HA rebuild its entities and restore last values after a broker
 restart. State is cached under a mutex (`lastState`) because the poll goroutine
 writes it and the transport goroutine reads it.
+
+The hook runs in a goroutine under a **serve-lifetime context** owned by the client
+(`hookCtx`), tracked by a `WaitGroup`. `Disconnect` cancels that context and drains
+the goroutine (bounded by the shutdown context) *before* the clean disconnect, so a
+slow republish is torn down cleanly rather than leaked or left publishing against a
+closing transport.
+
+## Readiness contract
+
+Readiness (`/readyz`, see `06-lifecycle-health.md`) is coupled to this publish path:
+the manager is **ready only after a poll whose `Collect` (telemetry read) *and*
+`PublishState` both succeed** — a decode that never reaches the broker does not count
+as ready. It flips **not-ready after `FAILURE_THRESHOLD` consecutive poll failures**,
+recovering on the next fully-successful poll. Because the ~40s Will delay can leave a
+dead pod's availability showing `online`, `/readyz` — not the MQTT availability topic
+— is the authoritative signal for orchestrators (Kubernetes probes).
 
 ## MODE gating
 
