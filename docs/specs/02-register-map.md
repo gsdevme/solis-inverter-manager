@@ -150,6 +150,10 @@ MUST preserve the other bits (read-modify-write), never assume the whole field.
 - **fc06 single-register writes** are accepted and take effect immediately on
   read-back. Setpoints **persist** — no ~120 s commit/revert on 43141 (confirmed
   over 130 s). Re-verify per-register if a new setpoint misbehaves.
+- **Timed H/M registers (43143–43150 and slots 2/3)** accept fc06 and persist
+  (≥130 s; Stage A probe on 43144/43164, see findings.md §Stage A). Every write
+  must still be read-back confirmed: **43024** acks fc06 but keeps its old
+  value, so an ack alone is not proof the inverter applied a write.
 - **Amps encoding:** `raw = uint16(round(amps * 10))`; decode is `raw / 10.0`.
   The inverter accepts up to 100.0 A (`43117/43118` = 1000); the HA control range
   is deliberately clamped to **0–60 A** per the plan.
@@ -171,5 +175,5 @@ registers"): product/model/firmware (33000–33003), inverter serial as ASCII
 (33004–33011, for the HA device block), holding mirrors of input stats
 (43034–43067), the protection-threshold table (43090–43113, 43119–43122 —
 ruled out as a schedule in Stage A, #27), the candidate force-charge/backup SOC
-pair (43024/43025, meaning unconfirmed), and various limit/config registers
-(33181–33217, 43012–43049).
+pair (43024/43025, meaning unconfirmed; 43024 ignores fc06), and various
+limit/config registers (33181–33217, 43012–43049).

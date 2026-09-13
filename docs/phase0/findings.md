@@ -171,6 +171,8 @@ Amps write encoding: `int(round(amps, 1) * 10)`, fc06. Inverter accepts up to
 | 8 | SOH validity (33140) | Reports a real value (97 %) on this unit |
 | 9 | Amps write limit | Unit allows 100 A; HA control clamped 0–60 A per plan |
 | 10 | Max single-read width | Datalogger NAKs `illegal_address` above ~100 regs (probed: `ReadInput(33022,125)` NAK; `33022+100` OK, `33022+110` NAK). Manager reads the telemetry bank as two blocks of ≤100 (split `33121\|33122`); stricter than the sidecar's 125 wire cap |
+| 11 | Timed H/M register writes (43143–43150, slots 2/3) | fc06 accepted, persist ≥130 s, restore confirmed (Stage A probe on 43144, 43164) |
+| 12 | 43024 writability | fc06 **acked but ignored** — read-back unchanged at 0/60/130 s; treat as read-only |
 
 ## Stage A (#27) — timed-slot layout & SOC probe
 
@@ -190,9 +192,14 @@ the owner's Solis-app Time-of-Use screen.
   *not* decoded — only the "not a schedule" conclusion is confirmed.
 - **43024 = 45, 43025 = 50** — shaped like a force-charge / backup SOC pair.
   Meaning and scale are **unconfirmed** pending an LCD/app cross-check.
-- **Time-register write behaviour (43143–43150, slot 2/3) and 43024 writability:
-  pending** the write→read-back→restore probe (`43144`, `43164`, `43024`, +1 each,
-  checkpoints 0/60/130 s); results land in `fixtures/write-probe-stage-a.json`.
+- **Timed H/M registers are fc06-writable and persist**
+  (`fixtures/write-probe-stage-a.json`): `43144` 31→32 and slot-3 `43164` 2→3
+  read back changed at 0/60/130 s (no ~120 s revert, as for 43141), then were
+  restored and re-read. Slot 2/3 registers behave exactly like slot 1.
+- **43024 is not writable via fc06:** the write 45→46 was acked (`ok:true`) but
+  every read-back (0/60/130 s) still returned 45 — the inverter silently ignores
+  it. Treat it as read-only; its meaning stays unconfirmed. Lesson for Stage B:
+  an fc06 ack proves nothing — only read-back confirmation does.
 - Drift vs Phase 0: RTC in sync (`43000–43005` = 2026-09-13 14:59:03), energy
   counters advanced, nothing else changed except the slot-3 window.
 
@@ -229,5 +236,7 @@ Notable extras beyond the confirmed map above (decode as future features permit)
 - `fixtures/write-path-probe.json` — the restored write test on 43141.
 - `fixtures/live-snapshot-holding-stage-a.json` — Stage A (#27) holding
   43000–43195 sweep confirming timed slots 2/3.
+- `fixtures/write-probe-stage-a.json` — Stage A write→read-back→restore probe on
+  43144 and 43164 (held) and 43024 (acked but ignored).
 
 These are the ground truth for the Go decode unit tests (Phase 3).
