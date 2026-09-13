@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -11,6 +13,7 @@ import (
 
 	"github.com/cucumber/godog"
 
+	"github.com/gsdevme/solis-inverter-manager/internal/controls"
 	"github.com/gsdevme/solis-inverter-manager/internal/homeassistant"
 	"github.com/gsdevme/solis-inverter-manager/internal/inverter"
 	"github.com/gsdevme/solis-inverter-manager/internal/publisher"
@@ -35,6 +38,53 @@ func (r *stubReader) ReadInput(_ context.Context, addr, count int) ([]uint16, er
 	return regs, nil
 }
 
+// fakeHRW is a programmable, recording controls.HoldingReadWriter for the controls
+// scenarios. regs maps absolute holding-register address to its current value;
+// reads return zero-filled slices for unseeded addresses. WriteHolding mutates
+// regs so the guard's confirming re-read observes the written value, and records
+// every write and count-1 read so the steps can assert the guard's behaviour.
+type fakeHRW struct {
+	regs       map[int]uint16
+	writeCalls []struct {
+		addr  int
+		value uint16
+	}
+	reads1 []int // addresses of every count==1 ReadHolding
+}
+
+func newFakeHRW() *fakeHRW { return &fakeHRW{regs: map[int]uint16{}} }
+
+func (f *fakeHRW) ReadHolding(_ context.Context, addr, count int) ([]uint16, error) {
+	if count == 1 {
+		f.reads1 = append(f.reads1, addr)
+	}
+	out := make([]uint16, count)
+	for i := range out {
+		out[i] = f.regs[addr+i]
+	}
+	return out, nil
+}
+
+func (f *fakeHRW) WriteHolding(_ context.Context, addr int, value uint16) error {
+	f.writeCalls = append(f.writeCalls, struct {
+		addr  int
+		value uint16
+	}{addr, value})
+	f.regs[addr] = value
+	return nil
+}
+
+// reads1Count counts count-1 reads issued at addr (a re-read of the same register).
+func (f *fakeHRW) reads1Count(addr int) int {
+	n := 0
+	for _, a := range f.reads1 {
+		if a == addr {
+			n++
+		}
+	}
+	return n
+}
+
 // world holds per-scenario state. The scaffold wires the real status server behind
 // an httptest server and exercises its probes — no inverter, sidecar or broker.
 // The MQTT fields drive the publisher against a recording client and the stub
@@ -47,6 +97,10 @@ type world struct {
 	rec    *publisher.RecordingPublisher
 	svc    *publisher.Service
 	reader *stubReader
+
+	hrw     *fakeHRW
+	handler *controls.Handler
+	sp      homeassistant.Setpoints
 }
 
 func (w *world) reset() {
@@ -56,6 +110,9 @@ func (w *world) reset() {
 	w.rec = nil
 	w.svc = nil
 	w.reader = nil
+	w.hrw = nil
+	w.handler = nil
+	w.sp = homeassistant.Setpoints{}
 }
 
 func (w *world) cleanup() {
@@ -101,6 +158,7 @@ func (w *world) configuredPublisher() error {
 		DiscoveryPrefix: "homeassistant",
 		TopicPrefix:     "solis",
 		Serial:          "1234567890",
+		ControlsEnabled: true,
 	}
 	w.rec = publisher.NewRecordingPublisher()
 	w.svc = publisher.New(w.rec, w.cfg)
@@ -118,11 +176,18 @@ func (w *world) discoveryPublished() error {
 }
 
 func (w *world) pollCollectedAndStatePublished() error {
+	return w.collectAndPublishState(homeassistant.Setpoints{})
+}
+
+// collectAndPublishState collects a poll from the stub reader and publishes state
+// with the given setpoints, shared by the Phase-4 (zero setpoints) and controls
+// (known setpoints) scenarios.
+func (w *world) collectAndPublishState(sp homeassistant.Setpoints) error {
 	tel, err := publisher.Collect(context.Background(), w.reader)
 	if err != nil {
 		return fmt.Errorf("collect: %w", err)
 	}
-	return w.svc.PublishState(context.Background(), tel)
+	return w.svc.PublishState(context.Background(), tel, sp)
 }
 
 func (w *world) availabilityPublished(state string) error {
@@ -217,6 +282,111 @@ func (w *world) retainedAvailability(want string) error {
 	return nil
 }
 
+// --- MQTT writable-control steps ---
+
+// quietLogger discards handler log output so the suite stays silent.
+func quietLogger() *slog.Logger {
+	return slog.New(slog.NewTextHandler(io.Discard, nil))
+}
+
+// controlsHandler wires a controls.Handler over the fake holding bank with the
+// kill-switch enabled and a nil refresh (the scenarios drive publishing directly).
+func (w *world) controlsHandler() error {
+	w.hrw = newFakeHRW()
+	w.handler = controls.NewHandler(w.hrw, quietLogger(), true, nil)
+	return nil
+}
+
+func (w *world) holdingReads(addr, value int) error {
+	w.hrw.regs[addr] = uint16(value)
+	return nil
+}
+
+// commandArrives delivers one command to the handler on the conventional
+// `solis/cmd/<key>/set` topic.
+func (w *world) commandArrives(key, payload string) error {
+	topic := "solis/cmd/" + key + "/set"
+	w.handler.OnMessage(context.Background(), topic, []byte(payload))
+	return nil
+}
+
+func (w *world) writtenOnce(addr, want int) error {
+	if len(w.hrw.writeCalls) != 1 {
+		return fmt.Errorf("writeCalls = %v, want exactly one write", w.hrw.writeCalls)
+	}
+	got := w.hrw.writeCalls[0]
+	if got.addr != addr || int(got.value) != want {
+		return fmt.Errorf("write = {addr:%d value:%d}, want {addr:%d value:%d}", got.addr, got.value, addr, want)
+	}
+	return nil
+}
+
+func (w *world) noWrites() error {
+	if len(w.hrw.writeCalls) != 0 {
+		return fmt.Errorf("writeCalls = %v, want ZERO (no fc06)", w.hrw.writeCalls)
+	}
+	return nil
+}
+
+// writeConfirmed asserts the last write landed in the register bank and that the
+// guard re-read that register (current read + confirming re-read).
+func (w *world) writeConfirmed() error {
+	if len(w.hrw.writeCalls) == 0 {
+		return fmt.Errorf("no write to confirm")
+	}
+	last := w.hrw.writeCalls[len(w.hrw.writeCalls)-1]
+	if w.hrw.regs[last.addr] != last.value {
+		return fmt.Errorf("register %d = %d after write, want %d", last.addr, w.hrw.regs[last.addr], last.value)
+	}
+	if n := w.hrw.reads1Count(last.addr); n < 2 {
+		return fmt.Errorf("register %d had %d single-register reads, want >=2 (current + confirming re-read)", last.addr, n)
+	}
+	return nil
+}
+
+func (w *world) controlsRead(charge, discharge float64, optimal string) error {
+	w.sp = homeassistant.Setpoints{
+		SetChargeCurrent:    charge,
+		SetDischargeCurrent: discharge,
+		OptimalIncome:       strings.EqualFold(optimal, "ON"),
+	}
+	return nil
+}
+
+func (w *world) stateWithSetpoints() error {
+	return w.collectAndPublishState(w.sp)
+}
+
+func (w *world) stateReportsNumber(key string, want float64) error {
+	doc, err := w.stateDoc()
+	if err != nil {
+		return err
+	}
+	got, ok := doc[key].(float64)
+	if !ok {
+		return fmt.Errorf("%s is %T, want number", key, doc[key])
+	}
+	if got != want {
+		return fmt.Errorf("%s = %v, want %v", key, got, want)
+	}
+	return nil
+}
+
+func (w *world) stateReportsString(key, want string) error {
+	doc, err := w.stateDoc()
+	if err != nil {
+		return err
+	}
+	got, ok := doc[key].(string)
+	if !ok {
+		return fmt.Errorf("%s is %T, want string", key, doc[key])
+	}
+	if got != want {
+		return fmt.Errorf("%s = %q, want %q", key, got, want)
+	}
+	return nil
+}
+
 func TestFeatures(t *testing.T) {
 	w := &world{}
 	suite := godog.TestSuite{
@@ -245,6 +415,17 @@ func TestFeatures(t *testing.T) {
 			ctx.Step(`^the state document contains the keys "([^"]*)"$`, w.stateContainsKeys)
 			ctx.Step(`^the state document reports battery_soc as (\d+)$`, w.stateReportsSOC)
 			ctx.Step(`^a retained "(online|offline)" message is published at the availability topic$`, w.retainedAvailability)
+
+			ctx.Step(`^a controls handler over a fake inverter holding-register bank$`, w.controlsHandler)
+			ctx.Step(`^holding register (\d+) currently reads (\d+)$`, w.holdingReads)
+			ctx.Step(`^an? "([^"]*)" command arrives with payload "([^"]*)"$`, w.commandArrives)
+			ctx.Step(`^holding register (\d+) is written once with (\d+)$`, w.writtenOnce)
+			ctx.Step(`^no holding register is written$`, w.noWrites)
+			ctx.Step(`^the write is confirmed by a re-read$`, w.writeConfirmed)
+			ctx.Step(`^the writable controls read charge ([-\d.]+) A, discharge ([-\d.]+) A, optimal income (ON|OFF)$`, w.controlsRead)
+			ctx.Step(`^a poll is collected and state is published with those setpoints$`, w.stateWithSetpoints)
+			ctx.Step(`^the state document reports (set_charge_current|set_discharge_current) as ([-\d.]+)$`, w.stateReportsNumber)
+			ctx.Step(`^the state document reports (optimal_income) as "([^"]*)"$`, w.stateReportsString)
 		},
 		Options: &godog.Options{
 			Format:   "pretty",
