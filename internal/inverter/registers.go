@@ -94,11 +94,12 @@ const (
 	RegTimedDischargeEndHour   = 43149
 	RegTimedDischargeEndMin    = 43150
 
-	// Timed slots 2 and 3 repeat the slot-1 layout (43141–43150) at a stride of
-	// RegTimedSlotStride: confirmed in Stage A (#27) against the live inverter and
-	// the owner's Solis-app Time-of-Use screen. Field offsets within a slot match
-	// slot 1 (e.g. charge-start minute = base + RegTimedChargeStartMinute -
-	// RegTimedChargeCurrent).
+	// Timed slots 2 and 3 sit at a stride of RegTimedSlotStride from slot 1 with
+	// their H/M windows at the slot-1 offsets (+2..+9), confirmed in Stage A (#27)
+	// against the live inverter and the owner's Solis-app Time-of-Use screen; e.g.
+	// charge-start minute = base + RegTimedChargeStartMinute - RegTimedChargeCurrent.
+	// The leading pair of each slot (base, base+1) is unconfirmed: the charge and
+	// discharge currents are global (RegTimedChargeCurrent/RegTimedDischargeCurrent).
 	RegTimedSlotStride = 10
 	RegTimedSlot2Base  = RegTimedChargeCurrent + RegTimedSlotStride   // 43151
 	RegTimedSlot3Base  = RegTimedChargeCurrent + 2*RegTimedSlotStride // 43161

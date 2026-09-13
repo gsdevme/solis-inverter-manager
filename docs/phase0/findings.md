@@ -101,12 +101,12 @@ S32 −132 W ≈ meter `33263` −129 W ✓; RTC = wall clock (± drift, below) 
 | 43145 / 43146 | Timed charge end H / M | U16 | 0–23 / 0–59 | 0 / 0 | — |
 | 43147 / 43148 | Timed discharge start H / M | U16 | 0–23 / 0–59 | 0 / 0 | — |
 | 43149 / 43150 | Timed discharge end H / M | U16 | 0–23 / 0–59 | 0 / 0 | — |
-| 43151 / 43152 | Slot 2 timed charge / discharge current | U16 | ÷10 A | 0 / 0 | slot 2 = 43151–43160: slot-1 layout at stride 10 (Stage A) |
+| 43151 / 43152 | Slot 2 leading pair — **unconfirmed** (not per-slot current: the app exposes one global charge/discharge current, 43141/43142) | U16 | — | 0 / 0 | slot 2 = 43151–43160: H/M fields at slot-1 offsets +2..+9, stride 10 (Stage A) |
 | 43153 / 43154 | Slot 2 charge start H / M | U16 | 0–23 / 0–59 | 0 / 0 | — |
 | 43155 / 43156 | Slot 2 charge end H / M | U16 | 0–23 / 0–59 | 5 / 29 | 05:29, owner-set in the Solis app |
 | 43157 / 43158 | Slot 2 discharge start H / M | U16 | 0–23 / 0–59 | 0 / 0 | — |
 | 43159 / 43160 | Slot 2 discharge end H / M | U16 | 0–23 / 0–59 | 0 / 0 | — |
-| 43161 / 43162 | Slot 3 timed charge / discharge current | U16 | ÷10 A | 0 / 0 | slot 3 = 43161–43170 (Stage A) |
+| 43161 / 43162 | Slot 3 leading pair — **unconfirmed** (as 43151/43152) | U16 | — | 0 / 0 | slot 3 = 43161–43170, H/M at +2..+9 (Stage A) |
 | 43163 / 43164 | Slot 3 charge start H / M | U16 | 0–23 / 0–59 | 14 / 2 | 14:02, owner-set in the Solis app |
 | 43165 / 43166 | Slot 3 charge end H / M | U16 | 0–23 / 0–59 | 14 / 56 | 14:56 |
 | 43167 / 43168 | Slot 3 discharge start H / M | U16 | 0–23 / 0–59 | 0 / 0 | — |
@@ -180,8 +180,11 @@ Live fc03 sweep of holding 43000–43195 on 2026-09-13 via the shipped sidecar i
 `MODE=live` (`fixtures/live-snapshot-holding-stage-a.json`), cross-checked against
 the owner's Solis-app Time-of-Use screen.
 
-- **Timed slots 2 and 3 exist at stride 10, same layout as slot 1:** slot 2 =
-  43151–43160, slot 3 = 43161–43170. The only non-zero values in 43151–43195 fall
+- **Timed slots 2 and 3 exist at stride 10, H/M windows at slot-1 offsets:** slot 2 =
+  43151–43160, slot 3 = 43161–43170. The leading pair of each slot (43151/52,
+  43161/62; 0 live) is **not** confirmed as per-slot current — the owner reports the
+  Solis app exposes a single global charge/discharge current (43141/43142) for all
+  slots. The only non-zero values in 43151–43195 fall
   exactly on the predicted H/M positions and are the windows the owner set in the
   app — slot 2 charge end 05:29 (`43155/56`), slot 3 charge 14:02–14:56
   (`43163–66`); slot 3 was zero in the Phase 0 sweep. 43171–43195 read all-zero.

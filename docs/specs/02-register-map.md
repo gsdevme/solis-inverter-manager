@@ -125,8 +125,8 @@ so the two reads need no merging.
 | 43145 / 43146 | Timed charge end H / M | U16 | 0–23 / 0–59 | R/W |
 | 43147 / 43148 | Timed discharge start H / M | U16 | 0–23 / 0–59 | R/W |
 | 43149 / 43150 | Timed discharge end H / M | U16 | 0–23 / 0–59 | R/W |
-| 43151–43160 | Timed slot 2 (same 10-register layout as 43141–43150) | U16×10 | as slot 1 | R/W |
-| 43161–43170 | Timed slot 3 (same 10-register layout as 43141–43150) | U16×10 | as slot 1 | R/W |
+| 43151–43160 | Timed slot 2: charge/discharge H/M windows at slot-1 offsets +2..+9; leading pair (43151/52) unconfirmed, currents are global (43141/43142) | U16×10 | as slot 1 | R/W |
+| 43161–43170 | Timed slot 3: as slot 2 (windows at +2..+9; 43161/62 unconfirmed) | U16×10 | as slot 1 | R/W |
 
 ## Work-mode bitfield (43110)
 
