@@ -1,0 +1,15 @@
+# Local MQTT broker for development and the Phase 5 live smoke of the manager's
+# writable Home Assistant controls. Anonymous access, no persistence — this is a
+# dev/test convenience, NOT a production broker.
+#
+#   docker compose up -d mqtt        # start the broker on localhost:1883
+#   docker compose exec mqtt mosquitto_sub -t '#' -v   # watch all traffic
+#   docker compose down              # stop and remove
+services:
+  mqtt:
+    image: eclipse-mosquitto:2
+    container_name: solis-mqtt
+    ports:
+      - "1883:1883"
+    volumes:
+      - ./deploy/mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro

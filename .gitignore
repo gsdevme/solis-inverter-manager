@@ -17,3 +17,6 @@ coverage.out
 */__pycache__/*
 __pycache__/*
 .pylintrc
+
+# Python virtualenv (sidecar, local only)
+sidecar/.venv/
