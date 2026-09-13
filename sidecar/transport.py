@@ -12,6 +12,7 @@ manager's job).
 
 from __future__ import annotations
 
+import queue
 import socket
 import struct
 import threading
@@ -75,9 +76,11 @@ class LiveTransport:
         solarman = self._connect_if_needed()
         try:
             return fn(solarman)
-        except (socket.timeout, TimeoutError) as e:
+        except (socket.timeout, TimeoutError, queue.Empty) as e:
+            # pysolarmanv5 3.x surfaces "request sent, no reply" as the bare
+            # queue.Empty from its reader queue rather than TimeoutError.
             self._disconnect()
-            raise RequestTimeoutError(str(e)) from e
+            raise RequestTimeoutError(str(e) or "no reply within socket timeout") from e
         except V5FrameError as e:
             self._disconnect()
             raise FrameError(str(e)) from e

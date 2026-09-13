@@ -106,6 +106,10 @@ and should not be retried blindly.
   concurrent HTTP requests queue on the lock.
 - **Reconnect on error.** On any transport exception the socket is marked dead
   (closed) and reconnected lazily on the next call.
+  This includes a request that gets **no reply** within the socket timeout
+  (`timeout`, 504): a silent peer — e.g. a firewall that dropped the idle TCP
+  state — must never leave a half-open session in place, or every later call
+  burns the full timeout while holding the lock and the sidecar stalls.
 - **Per-call timeout.** Each Solarman call uses the socket timeout from
   `INVERTER_SOCKET_TIMEOUT`.
 - **Mock mode.** `MODE=mock` serves an in-memory register map seeded from a Phase
