@@ -126,6 +126,32 @@ See the write-path sections of
   the next midnight. →
   `internal/schedule`, `internal/homeassistant/state.go`,
   `internal/controls/setpoints.go`
+- **REQ-HA-15** Work-mode controls use the Solis app's vocabulary (`09-schedule-controls.md`):
+  `select.optimal_income` with options `Run`/`Stop` **replaces** the on/off switch —
+  same key, same guarded read-modify-write of bit 1 only (35 ↔ 33), state derived
+  from `43110`; the publisher sends one empty retained payload to the old switch
+  discovery topic so HA drops it. `sensor.work_mode` is renamed "Energy storage
+  mode" and shows `Self Use` (bit 0), falling back to the flag list for unobserved
+  values. A writable storage-mode dropdown is deferred until the other modes are
+  probed. → `internal/homeassistant/entities.go`, `state.go`, `internal/controls/handler.go`
+- **REQ-HA-16** `select.boost_select` (options `Off`, `Charge|Discharge 15|30|45|60 min`)
+  programs slot 3: start = now truncated to the minute, end = the N-th quarter-hour
+  boundary strictly after now (N = minutes/15). Rejected with a warning and no write
+  when Optimal Income is `Stop`, the window would reach midnight, or it overlaps the
+  ToU window. Written through the guard one register at a time in the order start
+  hour, start minute, end hour, end minute; the other direction's window is asserted
+  empty; `Off` clears slot 3 at once. Only offsets `+2..+9` of a slot are ever written
+  (never `43151/43152`, `43161/43162`). State `boost_select` is derived from slot 3
+  (`Off`, the matching option via `15·⌈minutes/15⌉`, or `null` when unmappable).
+  → `internal/schedule`, `internal/inverter/schedule.go`, `internal/controls`
+- **REQ-HA-17** Manager-owned schedule reconcile after every poll when controls are
+  enabled: slots 1–2 are asserted to `TOU_WINDOW` split at midnight (discharge windows
+  empty; skipped entirely when `TOU_WINDOW` is empty) and an expired slot-3 boost
+  (`now ≥ end`) is cleared. Only registers that differ are written (guarded), so the
+  steady state issues no fc06; one log line per reconcile that wrote; errors are
+  non-fatal and retried next poll. App-side slot edits are reverted within one poll
+  (an unexpired slot-3 window is adopted). The reconcile never touches `43110`,
+  `43141`, `43142` or the slot leading pairs. → `internal/controls`, `internal/scheduler`
 
 ## Scheduling (`internal/scheduler`, `04-polling-scheduling.md`)
 
@@ -170,6 +196,9 @@ health-driven readiness.
 - **REQ-CF-06** RTC auto-sync knobs: `RTC_SYNC_ENABLED` (bool, default `false`) and
   `RTC_DRIFT_THRESHOLD` (Go duration, default `60s`, must be `> 0`). Redacted-safe and
   logged like the rest of the config. → `config.go`, `.env.dist`, `scheduler/*`
+- **REQ-CF-07** `TOU_WINDOW` (`HH:MM-HH:MM`, local time, default `23:30-05:30`; may cross
+  midnight; empty disables ToU assertion; anything else fails validation). Gated by
+  `CONTROLS_ENABLED` like every write. → `config.go`, `.env.dist`, `09-schedule-controls.md`
 
 ## Lifecycle & health (`internal/server`, `cmd`, `main.go`, `06-lifecycle-health.md`)
 
