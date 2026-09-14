@@ -31,10 +31,23 @@ Startup (`serve.go`):
 1. Load + validate config; build the logger; warn if `MODE=mock`.
 2. Start the status/health server **immediately** (listens during init so probes
    work at startup).
-3. Build the sidecar client + serialising `controls` wrapper; connect MQTT and
-   publish discovery + `online` (skipped when no broker URL is configured); build and
-   start the scheduler goroutine; block on `ctx` (SIGTERM/SIGINT) or a health-server
-   error.
+3. Build the sidecar client + serialising `controls` wrapper.
+4. **Wait for the sidecar to serve** — poll its `/health` every `500ms` for up to
+   `SIDECAR_STARTUP_TIMEOUT` (default `30s`; `0` disables the wait). The manager
+   starts before the sidecar in the two-container pod, so without this the first
+   poll fails with `connection refused` and logs a spurious `poll failed` warning
+   on every start. Any `200` ends the wait — `inverter_reachable` is deliberately
+   ignored here, since inverter reachability is the poll loop's and `/readyz`'s
+   concern. Success logs `sidecar serving` with the elapsed time. A sidecar that
+   never answers is **not** fatal: startup logs `sidecar not serving after startup
+   timeout, continuing` at WARN and carries on, because the scheduler's retries and
+   the `/readyz` gate already cover a sidecar that is still down. A SIGTERM during
+   the wait falls through silently to the shutdown path. Discovery, `online` and
+   the first poll are not published until the sidecar answers or the timeout
+   elapses (see `REQ-LC-11`).
+5. Connect MQTT and publish discovery + `online` (skipped when no broker URL is
+   configured); build and start the scheduler goroutine; block on `ctx`
+   (SIGTERM/SIGINT) or a health-server error.
 
 Graceful shutdown is a **single authoritative teardown path** (`shutdown()` in
 `serve.go`) that both exit branches funnel through, so teardown runs exactly once in

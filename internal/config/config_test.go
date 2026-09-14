@@ -187,6 +187,39 @@ func TestHAObjectIDPrefixInvalid(t *testing.T) {
 	}
 }
 
+func TestSidecarStartupTimeout(t *testing.T) {
+	cases := []struct {
+		name    string
+		value   string
+		want    time.Duration
+		wantErr bool
+	}{
+		{name: "default", value: "", want: 30 * time.Second},
+		{name: "explicit", value: "90s", want: 90 * time.Second},
+		{name: "zero disables the wait", value: "0s", want: 0},
+		{name: "negative rejected", value: "-1s", wantErr: true},
+		{name: "unparsable rejected", value: "soon", wantErr: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			setEnv(t, map[string]string{"SIDECAR_STARTUP_TIMEOUT": tc.value})
+			c, err := Load()
+			if tc.wantErr {
+				if err == nil || !strings.Contains(err.Error(), "SIDECAR_STARTUP_TIMEOUT") {
+					t.Fatalf("expected SIDECAR_STARTUP_TIMEOUT validation error, got %v", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("load: %v", err)
+			}
+			if c.SidecarStartupTimeout != tc.want {
+				t.Errorf("sidecar startup timeout = %s, want %s", c.SidecarStartupTimeout, tc.want)
+			}
+		})
+	}
+}
+
 func TestRedaction(t *testing.T) {
 	setEnv(t, map[string]string{
 		"INVERTER_SERIAL": "SN-super-secret",

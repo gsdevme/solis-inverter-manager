@@ -168,6 +168,30 @@ func (c *Client) Health(ctx context.Context) (Health, error) {
 	return h, nil
 }
 
+// WaitUntilServing blocks until the sidecar's HTTP listener answers /health,
+// retrying every interval until then. It exists because the two-container pod
+// starts the manager before the sidecar, so the first register call would
+// otherwise fail with a connection refused.
+//
+// Any successful /health response ends the wait: InverterReachable is
+// deliberately ignored, because the sidecar answering at all is what this waits
+// for — inverter reachability is the poll loop's and /readyz's concern. When ctx
+// ends first the last health error is returned wrapped with ctx.Err().
+func (c *Client) WaitUntilServing(ctx context.Context, every time.Duration) error {
+	for {
+		_, lastErr := c.Health(ctx)
+		if lastErr == nil {
+			return nil
+		}
+
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("wait for sidecar: %w: last error: %w", ctx.Err(), lastErr)
+		case <-time.After(every):
+		}
+	}
+}
+
 // read performs a block read against path and returns the raw register words.
 func (c *Client) read(ctx context.Context, path string, addr, count int) ([]uint16, error) {
 	var resp readResponse

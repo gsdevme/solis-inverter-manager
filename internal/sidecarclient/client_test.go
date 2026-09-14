@@ -7,7 +7,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/gsdevme/solis-inverter-manager/internal/inverter"
 	"github.com/gsdevme/solis-inverter-manager/internal/sidecarclient"
@@ -252,5 +254,40 @@ func TestComposesWithInverterDecode(t *testing.T) {
 	}
 	if got != 9 {
 		t.Fatalf("U16 = %d, want 9", got)
+	}
+}
+
+func TestWaitUntilServingWaitsForTheListener(t *testing.T) {
+	const failures = 3
+	var calls atomic.Int32
+	fake := newFakeSidecar(t, func(w http.ResponseWriter, _ *http.Request) {
+		if calls.Add(1) <= failures {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		writeJSON(t, w, 200, map[string]any{"ok": true, "inverter_reachable": true, "mode": "mock"})
+	})
+	client := sidecarclient.New(fake.server.URL)
+
+	if err := client.WaitUntilServing(t.Context(), time.Millisecond); err != nil {
+		t.Fatalf("WaitUntilServing: %v", err)
+	}
+	if got := calls.Load(); got != failures+1 {
+		t.Fatalf("calls = %d, want %d", got, failures+1)
+	}
+}
+
+func TestWaitUntilServingGivesUpWhenTheContextEnds(t *testing.T) {
+	fake := newFakeSidecar(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	})
+	client := sidecarclient.New(fake.server.URL)
+
+	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Millisecond)
+	defer cancel()
+
+	err := client.WaitUntilServing(ctx, time.Millisecond)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("err = %v, want it to wrap context.DeadlineExceeded", err)
 	}
 }
