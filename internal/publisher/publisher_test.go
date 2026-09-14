@@ -1,8 +1,10 @@
 package publisher_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -103,13 +105,20 @@ func TestPublishState(t *testing.T) {
 	tel.Battery.SOCPercent = 87
 	tel.Grid.PowerW = -1500
 
-	if err := svc.PublishState(context.Background(), tel, homeassistant.Setpoints{}); err != nil {
+	msg, err := svc.PublishState(context.Background(), tel, homeassistant.Setpoints{})
+	if err != nil {
 		t.Fatalf("PublishState: %v", err)
 	}
 
 	rc, ok := rec.Get(cfg.StateTopic())
 	if !ok {
 		t.Fatalf("no message at state topic %q", cfg.StateTopic())
+	}
+	if msg.Topic != cfg.StateTopic() {
+		t.Errorf("returned topic = %q, want %q", msg.Topic, cfg.StateTopic())
+	}
+	if !bytes.Equal(msg.Payload, rc.Payload) {
+		t.Errorf("returned payload differs from the published one:\n%s\n%s", msg.Payload, rc.Payload)
 	}
 	if !rc.Retain {
 		t.Errorf("state retain = false, want true")
@@ -163,5 +172,63 @@ func TestPublishDiscoveryRemovals(t *testing.T) {
 	}
 	if len(rc.Payload) != 0 {
 		t.Errorf("removal payload = %q, want empty", rc.Payload)
+	}
+}
+
+// errPublisher is a Publisher whose every publish fails, for the branch where the
+// document is built but never reaches the broker.
+type errPublisher struct{ err error }
+
+func (p errPublisher) Publish(context.Context, string, []byte, bool) error { return p.err }
+
+// TestPublishStateReturnsTheMessageOnPublishError pins the contract the status page
+// depends on: a broker failure still hands back the document that was built, so the
+// reading is not lost with the publish.
+func TestPublishStateReturnsTheMessageOnPublishError(t *testing.T) {
+	cfg := testConfig()
+	boom := errors.New("broker unreachable")
+	svc := publisher.New(errPublisher{err: boom}, cfg)
+
+	var tel inverter.Telemetry
+	tel.Battery.SOCPercent = 42
+
+	msg, err := svc.PublishState(context.Background(), tel, homeassistant.Setpoints{})
+	if !errors.Is(err, boom) {
+		t.Fatalf("PublishState error = %v, want it to wrap %v", err, boom)
+	}
+	if msg.Topic != cfg.StateTopic() {
+		t.Errorf("topic = %q, want %q even on a publish failure", msg.Topic, cfg.StateTopic())
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(msg.Payload, &doc); err != nil {
+		t.Fatalf("returned payload is not valid JSON: %v", err)
+	}
+	if got, _ := doc["battery_soc"].(float64); got != 42 {
+		t.Errorf("battery_soc = %v, want 42", doc["battery_soc"])
+	}
+}
+
+// TestPublishStateUsesTheInjectedClock checks WithNow reaches the RTC-drift
+// calculation, which is the only place the Service reads the clock.
+func TestPublishStateUsesTheInjectedClock(t *testing.T) {
+	cfg := testConfig()
+	rec := publisher.NewRecordingPublisher()
+	rtc := time.Date(2026, 9, 12, 10, 0, 0, 0, time.Local)
+	now := func() time.Time { return rtc.Add(90 * time.Second) }
+	svc := publisher.New(rec, cfg, publisher.WithNow(now))
+
+	var tel inverter.Telemetry
+	tel.Time = rtc
+
+	msg, err := svc.PublishState(context.Background(), tel, homeassistant.Setpoints{})
+	if err != nil {
+		t.Fatalf("PublishState: %v", err)
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(msg.Payload, &doc); err != nil {
+		t.Fatalf("state payload is not valid JSON: %v", err)
+	}
+	if got, _ := doc["rtc_drift"].(float64); got != -90 {
+		t.Errorf("rtc_drift = %v, want -90 (the inverter clock is 90s behind the injected now)", doc["rtc_drift"])
 	}
 }

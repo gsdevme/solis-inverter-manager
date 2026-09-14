@@ -17,7 +17,20 @@ composition root and process lifecycle.
     poll's telemetry read, which (after the threshold) fails readiness. There is no
     separate sidecar probe on `/readyz`.
 - **`GET /{$}`** — a minimal HTML status page: service name, readiness, uptime, poll
-  interval, Go version. Always `200`, never leaks secrets. Unknown paths `404`.
+  interval, Go version, and the last inverter values: every key of the state
+  document (`03-mqtt-ha-discovery.md`) as read on the most recent poll or command
+  refresh, with its age; "no readings yet" before the first successful read. The
+  page is handed (`RecordReading`) the *same built document* the publisher sends to
+  Home Assistant — `cmd`'s `statePublisher` builds it once and fans it out to both —
+  so `/` and HA can never disagree, and the page works without a broker
+  (`MODE=mock`, which publishes into `publisher.Discard`). A reading whose setpoints
+  were reused from cache because the holding-register read failed is flagged: the
+  page dates those setpoints from their last successful read instead of stamping
+  them with the telemetry's age. A document that is not a single JSON object is
+  refused and the previous reading is kept. The page auto-refreshes at the poll
+  interval — `POLL_INTERVAL` validation (`REQ-SC-01`) already enforces the 5 s floor,
+  and an interval of zero (only reachable in tests) emits no refresh tag at all.
+  Always `200`, never leaks secrets. Unknown paths `404`.
 
 `server.Config` is decoupled from `internal/config`; `serve.go` maps domain values
 in (`FailureThreshold`, `PollInterval`). Readiness is an atomic flag the scheduler

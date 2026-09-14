@@ -7,6 +7,7 @@
 package server
 
 import (
+	"fmt"
 	"net/http"
 	"sync"
 	"time"
@@ -24,17 +25,44 @@ type Config struct {
 	PollInterval     time.Duration
 }
 
+// Reading is one recorded state document for the status page.
+type Reading struct {
+	// Doc is the flat JSON state document as published to Home Assistant.
+	Doc []byte
+	// SetpointsStale is true when the writable-control setpoints in Doc were
+	// reused from an earlier read because the holding-register read failed, so
+	// the page can say so instead of stamping them with the telemetry's age.
+	SetpointsStale bool
+}
+
+// reading is an immutable snapshot of the last recorded Reading, decoded into
+// rendered rows once at record time. at is when it was recorded; setpointsAt is
+// when the setpoints it carries were last read straight from the inverter, which
+// is zero while none ever have been.
+type reading struct {
+	rows        []valueRow
+	at          time.Time
+	setpointsAt time.Time
+}
+
 // Server tracks process readiness and serves the health/status endpoints.
 //
 // Readiness is mutex-guarded because a flip depends on the consecutive-failure
 // counter, not a single flag. It starts false: /readyz returns 503 until the first
 // MarkSuccess, and returns to 503 once MarkFailure has been called `threshold`
 // times in a row.
+//
+// The last reading lives behind the same mutex. It is an immutable snapshot shared
+// by pointer: RecordReading decodes outside the lock and swaps a fresh one in, so
+// handleRoot renders from the pointer with the lock released and never races a
+// later reading. The state document is opaque here — this package takes bytes in
+// and renders HTML out, and knows nothing of the inverter or Home Assistant.
 type Server struct {
 	mu                  sync.Mutex
 	ready               bool
 	consecutiveFailures int
 	threshold           int
+	last                *reading
 
 	cfg       Config
 	startedAt time.Time
@@ -90,6 +118,44 @@ func (s *Server) Ready() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.ready
+}
+
+// RecordReading decodes and stores a reading. It returns an error and keeps the
+// previous reading when Doc is not a single JSON object (empty, null, an array, a
+// scalar, malformed, or followed by trailing data). The caller may reuse or mutate
+// Doc afterwards: nothing of it is retained past the decode.
+//
+// A reading whose setpoints were reused from an earlier read carries that earlier
+// read's timestamp forward, so the page can date the telemetry and the setpoints
+// separately.
+func (s *Server) RecordReading(r Reading) error {
+	rows, err := decodeValues(r.Doc)
+	if err != nil {
+		return fmt.Errorf("record reading: %w", err)
+	}
+	at := time.Now()
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	setpointsAt := at
+	if r.SetpointsStale {
+		setpointsAt = time.Time{}
+		if s.last != nil {
+			setpointsAt = s.last.setpointsAt
+		}
+	}
+	s.last = &reading{rows: rows, at: at, setpointsAt: setpointsAt}
+	return nil
+}
+
+// snapshot returns readiness and the last recorded reading (nil before the first)
+// under a single critical section, so the page renders one consistent view of the
+// Server. The reading is immutable, so the caller keeps using it after the lock is
+// released.
+func (s *Server) snapshot() (bool, *reading) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.ready, s.last
 }
 
 // Handler returns the mux serving /, /healthz and /readyz. See routes.go for the

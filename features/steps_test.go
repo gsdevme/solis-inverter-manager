@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"strconv"
 	"strings"
 	"testing"
@@ -198,6 +199,61 @@ func (w *world) endpointReturns(path string, want int) error {
 func (w *world) livenessReturns(code int) error  { return w.endpointReturns("/healthz", code) }
 func (w *world) readinessReturns(code int) error { return w.endpointReturns("/readyz", code) }
 
+// recordsPublishedState hands the status server the very document the publisher
+// just sent, which is what the manager's statePublisher does on every poll. That
+// type is unexported in internal/cmd, so this mirrors the seam the way
+// setpointsReadAt mirrors toHASetpoints; the fan-out itself is unit-tested in
+// internal/cmd.
+func (w *world) recordsPublishedState() error {
+	rc, ok := w.rec.Get(w.cfg.StateTopic())
+	if !ok {
+		return fmt.Errorf("no message at state topic %q to record", w.cfg.StateTopic())
+	}
+	return w.stat.RecordReading(server.Reading{Doc: rc.Payload})
+}
+
+// valueRowRe matches one rendered row of the status page's value table.
+var valueRowRe = regexp.MustCompile(`<tr><td>([^<]*)</td><td>([^<]*)</td></tr>`)
+
+// statusPageShowsValue asserts the status page's value table renders key with the
+// given value. html/template escapes the cells, so the scenarios stick to keys and
+// values that survive escaping unchanged.
+func (w *world) statusPageShowsValue(key, want string) error {
+	body, err := w.getPage("/")
+	if err != nil {
+		return err
+	}
+	values := map[string]string{}
+	for _, m := range valueRowRe.FindAllStringSubmatch(body, -1) {
+		values[m[1]] = m[2]
+	}
+	got, ok := values[key]
+	if !ok {
+		return fmt.Errorf("status page has no row for %q (rows: %v)", key, values)
+	}
+	if got != want {
+		return fmt.Errorf("status page shows %q as %q, want %q", key, got, want)
+	}
+	return nil
+}
+
+// getPage fetches an endpoint and returns its body, insisting on a 200.
+func (w *world) getPage(path string) (string, error) {
+	resp, err := http.Get(w.srv.URL + path)
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("GET %s = %d, want %d", path, resp.StatusCode, http.StatusOK)
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", err
+	}
+	return string(body), nil
+}
+
 // --- MQTT / Home Assistant discovery steps ---
 
 func (w *world) configuredPublisher() error {
@@ -234,7 +290,8 @@ func (w *world) collectAndPublishState(sp homeassistant.Setpoints) error {
 	if err != nil {
 		return fmt.Errorf("collect: %w", err)
 	}
-	return w.svc.PublishState(context.Background(), tel, sp)
+	_, err = w.svc.PublishState(context.Background(), tel, sp)
+	return err
 }
 
 func (w *world) availabilityPublished(state string) error {
@@ -697,6 +754,8 @@ func TestFeatures(t *testing.T) {
 			ctx.Step(`^the manager is marked ready$`, w.markedReady)
 			ctx.Step(`^the liveness endpoint returns (\d+)$`, w.livenessReturns)
 			ctx.Step(`^the readiness endpoint returns (\d+)$`, w.readinessReturns)
+			ctx.Step(`^the published state document is recorded for the status page$`, w.recordsPublishedState)
+			ctx.Step(`^the status page shows "([^"]*)" as "([^"]*)"$`, w.statusPageShowsValue)
 
 			ctx.Step(`^a configured publisher with a recording MQTT client and a stub inverter reader$`, w.configuredPublisher)
 			ctx.Step(`^the inverter reports a battery state of charge of (\d+) percent$`, w.reportsSOC)
