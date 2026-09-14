@@ -51,6 +51,12 @@ type Config struct {
 	InverterSocketTimeout time.Duration
 	SidecarURL            string // localhost HTTP endpoint of the Python sidecar
 
+	// SidecarStartupTimeout bounds the startup wait for the sidecar's HTTP
+	// listener. In the two-container pod the manager starts first, so it polls
+	// /health until the sidecar answers before announcing itself and scheduling
+	// the first poll. Zero disables the wait and starts immediately.
+	SidecarStartupTimeout time.Duration
+
 	// Polling & scheduling
 	PollInterval     time.Duration
 	PollMaxRetries   int
@@ -162,6 +168,14 @@ func Load() (*Config, error) {
 	}
 	c.InverterSocketTimeout = socketTimeout
 
+	startupTimeout, err := parseDuration("SIDECAR_STARTUP_TIMEOUT", 30*time.Second)
+	if err != nil {
+		errs = append(errs, err)
+	} else if startupTimeout < 0 {
+		errs = append(errs, errors.New("SIDECAR_STARTUP_TIMEOUT must be >= 0"))
+	}
+	c.SidecarStartupTimeout = startupTimeout
+
 	interval, err := parseDuration("POLL_INTERVAL", 60*time.Second)
 	if err != nil {
 		errs = append(errs, err)
@@ -229,12 +243,12 @@ func (c *Config) String() string {
 		password = redacted
 	}
 	return fmt.Sprintf("Config{mode=%s inverterIP=%s inverterSerial=%s inverterPort=%d "+
-		"socketTimeout=%s sidecar=%s poll=%s maxRetries=%d failThreshold=%d "+
+		"socketTimeout=%s sidecar=%s sidecarStartupTimeout=%s poll=%s maxRetries=%d failThreshold=%d "+
 		"rtcSyncEnabled=%t rtcDriftThreshold=%s controlsEnabled=%t touWindow=%s "+
 		"broker=%s user=%s password=%s clientID=%s topicPrefix=%s haPrefix=%s haObjectIDPrefix=%s "+
 		"health=%s log=%s/%s}",
 		c.Mode, c.InverterIP, serial, c.InverterPort, c.InverterSocketTimeout, c.SidecarURL,
-		c.PollInterval, c.PollMaxRetries, c.FailureThreshold,
+		c.SidecarStartupTimeout, c.PollInterval, c.PollMaxRetries, c.FailureThreshold,
 		c.RTCSyncEnabled, c.RTCDriftThreshold, c.ControlsEnabled, c.TOUWindow, c.MQTTBrokerURL,
 		c.MQTTUsername, password, c.MQTTClientID, c.MQTTTopicPrefix, c.HADiscoveryPrefix,
 		c.HAObjectIDPrefix, c.HealthAddr, c.LogLevel, c.LogFormat)
@@ -252,6 +266,7 @@ func (c *Config) LogValue() slog.Value {
 		slog.Int("inverter_port", c.InverterPort),
 		slog.Duration("socket_timeout", c.InverterSocketTimeout),
 		slog.String("sidecar_url", c.SidecarURL),
+		slog.Duration("sidecar_startup_timeout", c.SidecarStartupTimeout),
 		slog.Duration("poll_interval", c.PollInterval),
 		slog.Int("poll_max_retries", c.PollMaxRetries),
 		slog.Int("failure_threshold", c.FailureThreshold),

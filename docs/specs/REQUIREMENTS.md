@@ -255,6 +255,10 @@ health-driven readiness.
 - **REQ-CF-08** `HA_OBJECT_ID_PREFIX` (default `solis_inverter`) must be a non-empty
   slug matching `^[a-z0-9_]+$`; it is the entity-id prefix of REQ-HA-18 and is plumbed
   into `homeassistant.Config.ObjectIDPrefix`. → `config.go`, `.env.dist`, `cmd/serve.go`
+- **REQ-CF-09** `SIDECAR_STARTUP_TIMEOUT` (Go duration, default `30s`, must be `>= 0`;
+  `0` disables the startup wait) bounds the wait for the sidecar's HTTP listener
+  described in `REQ-LC-11`. Validated in the same `errors.Join` fail-fast pass and
+  logged like the rest of the config. → `config.go`, `.env.dist`, `cmd/serve.go`
 
 ## Lifecycle & health (`internal/server`, `cmd`, `main.go`, `06-lifecycle-health.md`)
 
@@ -275,6 +279,18 @@ health-driven readiness.
   that suppresses the Will) → stop the health server. The health-error branch cancels
   the run context so the scheduler drains, then returns the health error; the signal
   branch returns nil. → `cmd/serve.go`, `internal/mqtt/client.go`
+- **REQ-LC-11** Startup **waits for the sidecar to serve** before announcing and
+  polling: after the sidecar client is built and **before** the MQTT connect,
+  discovery and `online` publish and before the scheduler starts, `/health` is probed
+  every `500ms` for up to `SIDECAR_STARTUP_TIMEOUT` (`REQ-CF-09`). Any `200` ends the
+  wait (`inverter_reachable` is ignored — reachability is `REQ-LC-09`'s job) and logs
+  `sidecar serving` with the elapsed time; exhausting the timeout logs
+  `sidecar not serving after startup timeout, continuing` at WARN and startup
+  continues, since the scheduler's retries and the `/readyz` gate cover a sidecar that
+  is still down. A SIGTERM during the wait falls through to the `REQ-LC-10` teardown
+  without the warning. This removes the spurious first-poll
+  `connection refused` / `poll failed` on every pod start. →
+  `cmd/serve.go`, `sidecarclient.WaitUntilServing`
 - **REQ-LC-08** `cmd/main.go` reports errors to stderr and exits non-zero. →
   `cmd/main.go`
 

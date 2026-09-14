@@ -8,7 +8,9 @@ ticker, an immediate first poll, an injectable clock for `testing/synctest`, and
 ## Loop
 
 - Poll at `POLL_INTERVAL` (default `60s`, floor `5s`), with an **immediate first
-  poll** before the ticker starts.
+  poll** before the ticker starts. "Immediate" is relative to the scheduler
+  starting: `serve` waits for the sidecar to serve before it starts the scheduler
+  at all (`REQ-LC-11`).
 - Ticks are **serialised** on a single mutex (`apiMu`) so two polls never overlap —
   the sidecar's single socket can only carry one Modbus frame at a time.
 - The loop is a **single goroutine**. RTC auto-sync is folded into the poll (below),

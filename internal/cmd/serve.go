@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"sync/atomic"
 	"time"
@@ -82,6 +83,36 @@ func boostSelectAttr(slots inverter.TimedSlots) string {
 	return *state
 }
 
+// sidecarProbeInterval is how often the startup wait re-probes the sidecar's
+// /health endpoint while it is still coming up.
+const sidecarProbeInterval = 500 * time.Millisecond
+
+// waitForSidecar blocks until the sidecar's HTTP listener answers, bounded by
+// timeout, so the manager does not announce itself and poll while its sibling
+// container is still starting (the first poll would otherwise fail with a
+// connection refused). A timeout of zero disables the wait.
+//
+// A sidecar that never answers is not fatal — startup continues, and the
+// scheduler's retries plus the /readyz gate cover a sidecar that is still down.
+// A cancelled parent context (SIGTERM during startup) falls through silently to
+// the existing shutdown path rather than logging a warning.
+func waitForSidecar(ctx context.Context, client *sidecarclient.Client, timeout time.Duration, logger *slog.Logger) {
+	if timeout <= 0 {
+		return
+	}
+	waitCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	started := time.Now()
+	if err := client.WaitUntilServing(waitCtx, sidecarProbeInterval); err != nil {
+		if ctx.Err() == nil {
+			logger.Warn("sidecar not serving after startup timeout, continuing", "err", err, "timeout", timeout)
+		}
+		return
+	}
+	logger.Info("sidecar serving", "elapsed", time.Since(started))
+}
+
 func runServe(ctx context.Context) error {
 	// A cancellable child of the incoming context so the shutdown path can stop the
 	// scheduler itself — notably on the healthErr branch, where the parent ctx is
@@ -117,6 +148,7 @@ func runServe(ctx context.Context) error {
 	logger.Info("health server listening", "addr", cfg.HealthAddr)
 
 	client := sidecarclient.New(cfg.SidecarURL)
+	waitForSidecar(ctx, client, cfg.SidecarStartupTimeout, logger)
 	// wrapper serializes every register call (input reads via publisher.Collect,
 	// holding read/writes via the command handler) on one mutex, because the
 	// sidecar's single socket cannot service concurrent Modbus transactions. The
