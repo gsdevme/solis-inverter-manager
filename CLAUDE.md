@@ -79,7 +79,9 @@ fake sidecar itself lands in **Phase 2**.
   value differs — holding registers are flash-backed and needless writes wear
   flash. Applies to setpoints (43141/43142 amps, 43110 work mode) and RTC sync
   (43000–43005, only when drift exceeds a threshold).
-- **No container image publish** until the owner approves. Branch pushes are fine.
+- **Container image publishing is approved** as of `v2.0.0`: `release.yml` pushes the
+  manager and sidecar images to ghcr on every release-please release. Branch pushes
+  never publish.
 - Trust no register unconfirmed — the Phase 0 fixtures are the ground truth.
 
 ## Live inverter access (Phase 0 lessons)

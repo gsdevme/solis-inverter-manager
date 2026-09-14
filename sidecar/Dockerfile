@@ -16,4 +16,7 @@ COPY docs/phase0/fixtures/ ./docs/phase0/fixtures/
 
 EXPOSE 8081
 
+# Numeric non-root UID (no passwd entry needed) so the pod can set runAsNonRoot.
+USER 65532:65532
+
 ENTRYPOINT ["python", "-m", "sidecar"]

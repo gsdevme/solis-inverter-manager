@@ -54,8 +54,9 @@ Writes: HA command topic → Go validates → **read-before-write guard** → si
   value differs — holding registers are flash-backed and needless writes wear
   flash. Applies to all setpoints (43141/43142 amps, 43110 work mode) and any RTC
   auto-sync (only write 43000–43005 when drift exceeds a threshold).
-- Rebuild in place, preserve git history. No `git push` beyond the feature branch
-  and **no container image publish** until the owner says so.
+- Rebuild in place, preserve git history. No `git push` beyond the feature branch.
+  Container image publishing was gated on owner approval and is **approved as of
+  `v2.0.0`** (`release.yml` pushes both images to ghcr on each release).
 - Modelled on the sibling services `gsdevme/hyundai-bluelink-mqtt` and
   `gsdevme/unifi-ha-presence-mqtt` (go 1.27, stdlib-first, autopaho, numbered
   `docs/specs`, godog BDD, distroless, `/healthz`+`/readyz`, HA autodiscovery with

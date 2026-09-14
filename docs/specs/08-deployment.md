@@ -34,14 +34,25 @@ Two images, both built from the repo root:
   Built from the repo root so the Phase 0 fixtures are copied alongside for
   `MODE=mock`.
 
+  Runs as the numeric non-root user `65532:65532` (no passwd entry is needed) so
+  the pod's `runAsNonRoot` check passes.
+
   ```sh
   docker build -f sidecar/Dockerfile -t solis-sidecar .
   ```
 
-**Publishing is gated.** Per the project guardrail, **no image is pushed until the
-owner approves.** CI builds both images build-only (see below); flipping to publish
-is a one-line change in `release.yml` plus a ghcr login (documented in that file's
-header).
+**Published images.** Publishing was approved by the owner as of `v2.0.0`. Each
+release pushes both images to ghcr, tagged with the release tag (`vX.Y.Z`) and
+`latest`:
+
+| Image | Built from |
+|---|---|
+| `ghcr.io/gsdevme/solis-inverter-manager` | `Dockerfile` |
+| `ghcr.io/gsdevme/solis-inverter-manager-sidecar` | `sidecar/Dockerfile` |
+
+Both packages are **public** on ghcr so the cluster pulls them without an
+`imagePullSecret` (set once on the package page after the first push). Pin the
+release tag in the GitOps manifest, never `latest`.
 
 ## Probes
 
@@ -102,10 +113,11 @@ comfortably covers that plus SIGTERM propagation to both containers.
   `master`, the same gate → `release-please` (`release-type: go`, driven by
   [`release-please-config.json`](../../release-please-config.json) +
   [`.release-please-manifest.json`](../../.release-please-manifest.json)) maintains
-  the Release PR and cuts tags → an `image` job (gated on `release_created`) builds
-  both images multi-arch (`linux/amd64,linux/arm64`). **Build-only (`push: false`)
-  pending owner approval** — the header comment documents exactly what to flip to
-  publish to ghcr.
+  the Release PR and cuts tags → an `image` job (gated on `release_created`) logs
+  in to ghcr with the workflow `GITHUB_TOKEN` (`packages: write`) and builds and
+  **pushes** both images multi-arch (`linux/amd64,linux/arm64`) under the tags
+  listed in [Images](#images). Only a release-please release publishes; branch
+  pushes and PRs never do.
 
 ## Migrating from the legacy Python publisher
 
@@ -223,7 +235,8 @@ device.
 ## Reference manifests
 
 Example only — the canonical source is the GitOps/Helm chart in the infrastructure
-repo. Image refs are placeholders (nothing is published yet).
+repo. Pin the image refs to a release tag; `v2.0.0` below is the first published
+release.
 
 ```yaml
 # configmap.yaml — non-secret env (see 05-config.md for meanings)
@@ -287,7 +300,7 @@ spec:
         seccompProfile: { type: RuntimeDefault }
       containers:
         - name: manager
-          image: ghcr.io/gsdevme/solis-inverter-manager:latest # placeholder — not yet published
+          image: ghcr.io/gsdevme/solis-inverter-manager:v2.0.0
           args: ["serve"]
           ports:
             - { name: health, containerPort: 8080 }
@@ -311,7 +324,7 @@ spec:
             readOnlyRootFilesystem: true
             capabilities: { drop: [ALL] }
         - name: sidecar
-          image: ghcr.io/gsdevme/solis-sidecar:latest # placeholder — not yet published
+          image: ghcr.io/gsdevme/solis-inverter-manager-sidecar:v2.0.0
           ports:
             - { name: sidecar, containerPort: 8081 }
           envFrom:
