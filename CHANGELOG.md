@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.2.0](https://github.com/gsdevme/solis-inverter-manager/compare/v2.1.0...v2.2.0) (2026-09-14)
+
+
+### Features
+
+* **homeassistant:** publish suggested_display_precision per register scale ([2696e6d](https://github.com/gsdevme/solis-inverter-manager/commit/2696e6d390a756a8cb537fc544acb836a87a80b3))
+
 ## [2.1.0](https://github.com/gsdevme/solis-inverter-manager/compare/v2.0.1...v2.1.0) (2026-09-14)
 
 
