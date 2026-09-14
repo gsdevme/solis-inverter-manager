@@ -38,8 +38,8 @@ Trust no register that findings.md does not confirm.
 
 | Quantity | Register(s) | Sign meaning |
 |---|---|---|
-| Battery power | 33149·33150 (S32, W) | **+ = charge, − = discharge** |
-| Battery current | 33134 (S16, ÷10 A) | **+ = charge, − = discharge** |
+| Battery power | 33149·33150 (32-bit, W) | Register read as a **magnitude**; sign derived from the 33135 flag and published **+ = charge, − = discharge** |
+| Battery current | 33134 (÷10 A) | Register read as a **magnitude**; sign derived from the 33135 flag and published **+ = charge, − = discharge** |
 | Grid power | 33130·33131 (S32, W) | **+ = export, − = import** |
 | Battery direction flag | 33135 (U16) | **0 = charge, 1 = discharge** |
 
@@ -69,14 +69,14 @@ Live values and cross-checks are in findings.md — not repeated here.
 | 33130·33131 | Grid power (meter) | S32 | ×1 W (+export/−import) |
 | 33132 | Work-mode read-back | U16 | bitfield — mirrors 43110 (see below) |
 | 33133 | Battery voltage | U16 | ÷10 V |
-| 33134 | Battery current | S16 | ÷10 A (+charge/−discharge) |
+| 33134 | Battery current | S16 | ÷10 A magnitude; signed from 33135 (+charge/−discharge) |
 | 33135 | Battery direction flag | U16 | 0 = charge, 1 = discharge |
 | 33139 | Battery SOC | U16 | ×1 % |
 | 33140 | Battery SOH | U16 | ×1 % |
 | 33141 | BMS battery voltage | U16 | ÷100 V |
 | 33142 | BMS battery current | S16 | ÷10 A |
 | 33147 | House load power | U16 | ×1 W |
-| 33149·33150 | Battery power | S32 | ×1 W (+charge/−discharge) |
+| 33149·33150 | Battery power | S32 | ×1 W magnitude; signed from 33135 (+charge/−discharge) |
 | 33161·33162 | Battery total charge energy | U32 | ×1 kWh |
 | 33163 | Battery charge today | U16 | ÷10 kWh |
 | 33165·33166 | Battery total discharge energy | U32 | ×1 kWh |

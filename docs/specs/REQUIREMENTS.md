@@ -62,11 +62,13 @@ payload shapes and the 38-entity table.
 - **REQ-HA-03** Entity classes per the `03` table; **daily** energy counters use
   `state_class: total`, **lifetime** counters `total_increasing`; signed
   battery/grid power is one signed entity (not split), with a derived
-  `battery_charging` binary_sensor. `battery_charge_power` and
-  `battery_discharge_power` are **derived convenience sensors** for Home Assistant
-  (`max(battery_power, 0)` / `max(-battery_power, 0)`, computed in `BuildState`
-  from the one correctly-decoded signed S32 — not an independent decode of the
-  register halves). → `homeassistant/entities.go`, `homeassistant/state.go`
+  `battery_charging` binary_sensor. `battery_power` and `battery_current` take
+  their sign from the 33135 direction flag during decode (the registers are
+  magnitudes). `battery_charge_power` and `battery_discharge_power` are **derived
+  convenience sensors** for Home Assistant (`max(battery_power, 0)` /
+  `max(-battery_power, 0)`, computed in `BuildState` from that one signed value —
+  not an independent decode of the register halves).
+  → `homeassistant/entities.go`, `homeassistant/state.go`
 - **REQ-HA-04** Availability + LWT: retained `offline` LWT on `<base>/availability`
   at QoS 1; `online` retained on connect; explicit `offline` retained + clean
   disconnect on graceful shutdown (clean disconnect suppresses the Will).

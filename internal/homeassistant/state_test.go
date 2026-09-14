@@ -162,6 +162,9 @@ func TestBuildStateDerivedBatteryPower(t *testing.T) {
 		{"discharging", -174, 0, 174},
 		{"charging", 2100, 2100, 0},
 		{"idle", 0, 0, 0},
+		// The 2026-09-14 live discharge: the inverter reported a +381 W magnitude
+		// with direction 33135 = 1, which the decode signs before it reaches here.
+		{"discharging live capture", -381, 0, 381},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

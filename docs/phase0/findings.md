@@ -27,17 +27,30 @@ Only **confirmed facts** survive here. The probe harness itself was throwaway.
     32-bit total currently reads < 65536 (max ~21717 kWh), so the high word is
     always 0 today. Decode as MSW-first; revisit only if a total ever exceeds
     65535 and reads absurd.
-- **Signed values (S16/S32):** two's complement. Battery/grid power and battery
-  current are signed; sign encodes direction (see below).
+- **Signed values (S16/S32):** two's complement. Grid power is signed and its sign
+  encodes direction; battery power and battery current are read as magnitudes and
+  signed from the `33135` direction flag (see below).
 
 ## Confirmed sign conventions
 
 | Quantity | Register(s) | Sign | Confirmed by |
 |---|---|---|---|
-| Battery power | 33149·33150 (S32, W) | **+ = charge, − = discharge** | live +802 W while `33135`=0 (charging); = 15.5 A × 51.8 V |
-| Battery current | 33134 (S16, ÷10 A) | **+ = charge, − = discharge** | official docs + charge-direction flag `33135` |
+| Battery power | 33149·33150 (32-bit, W) | Register is a **magnitude**; published **+ = charge, − = discharge** from `33135` | live +802 W while `33135`=0 (charging); = 15.5 A × 51.8 V; live +381 W while `33135`=1 (discharging) — see the 2026-09-14 note |
+| Battery current | 33134 (÷10 A) | Register is a **magnitude**; published **+ = charge, − = discharge** from `33135` | live +15.5 A while charging, +7.6 A while discharging — see the 2026-09-14 note |
 | Grid power | 33130·33131 (S32, W) | **+ = export, − = import** | live −132 W (importing); cross-checks `33263` = −129 W |
 | Battery direction flag | 33135 (U16) | **0 = charge, 1 = discharge** | live 0 while charging |
+
+**2026-09-14 — battery sign correction (live).** Every Phase 0 fixture was
+captured while charging (`33135`=0), so the "+ = charge, − = discharge" register
+convention was never observed for a discharge. A live reading taken while the
+house was running off the battery (house load 448 W, PV 189 W, grid 1 W,
+`33135`=1) reported `33149·33150` = **+381 W** and `33134` = **+7.6 A** — both
+positive. On this firmware the power and current registers are therefore
+**magnitudes**, and only `33135` carries the direction (the legacy Python app
+derived to/from-battery the same way). **Decision:** the decode reads both
+registers as magnitudes and applies the sign from `33135`, so the published
+`battery_power` / `battery_current` keep the documented + = charge, − = discharge
+convention in both directions.
 
 The old app's `grid_import=reg33130 / grid_export=reg33131` was a **bug**: those
 two registers are the two halves of a single S32, not independent values. Its
@@ -162,7 +175,7 @@ Amps write encoding: `int(round(amps, 1) * 10)`, fc06. Inverter accepts up to
 | # | Question | Resolution |
 |---|---|---|
 | 1 | 32-bit word order | MSW-first (documentary; not empirically forced — all totals < 65536) |
-| 2 | Battery-power sign | + = charge (live +802 W, flag 33135=0) |
+| 2 | Battery-power sign | Register is a magnitude; sign derived from flag 33135 (2026-09-14: live +381 W with 33135=1 while discharging, after +802 W with 33135=0 while charging) |
 | 3 | Grid power: two U16s vs one S32 | **One S32** (33130·33131 = −132 W; old app bug) |
 | 4 | BMS current scale (33142) | ÷10 A (matches 33134 live) |
 | 5 | 43110 bit5 grid-charge polarity | bit5=1 = allow (empirical 33/35) |
