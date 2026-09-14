@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.0.1](https://github.com/gsdevme/solis-inverter-manager/compare/v2.0.0...v2.0.1) (2026-09-14)
+
+
+### Bug Fixes
+
+* **inverter:** derive battery direction from the 33135 flag ([bdf23db](https://github.com/gsdevme/solis-inverter-manager/commit/bdf23dba8e04fd34b2300cddd6c0b7d39faaf9eb))
+
 ## [2.0.0](https://github.com/gsdevme/solis-inverter-manager/compare/v1.6.1...v2.0.0) (2026-09-14)
 
 
