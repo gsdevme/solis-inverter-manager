@@ -222,8 +222,9 @@ func (h *Handler) setBoost(ctx context.Context, key string, payload []byte) bool
 
 // syncRTC guards each of the six RTC holding registers; each Guard skips a
 // register whose value already matches, so only drifted registers are written.
-// A single register failure is logged and the loop continues. This is the manual
-// "Sync RTC now" command path; it reports "routed" so refresh fires afterwards.
+// A register that fails its retry stops the sequence, as does a write the re-read
+// did not confirm; the error is logged and dropped. This is the manual "Sync RTC
+// now" command path; it reports "routed" so refresh fires afterwards.
 func (h *Handler) syncRTC(ctx context.Context, key string) bool {
 	_, _ = h.syncRTCTo(ctx, key)
 	return true
@@ -233,7 +234,8 @@ func (h *Handler) syncRTC(ctx context.Context, key string) bool {
 // (REQ-HA-13). It writes the six RTC holding registers (43000–43005) to the
 // handler's current clock under the read-before-write guard, so only drifted
 // registers are actually written. It reports whether any register was written
-// (wrote=true means at least one fc06 was issued) and the first error, if any.
+// (wrote=true means at least one fc06 was issued) and the error that stopped the
+// sequence, if any.
 // The scheduler invokes this from its poll — already holding apiMu — when RTC
 // auto-sync is enabled and measured drift exceeds the threshold.
 func (h *Handler) SyncRTC(ctx context.Context) (bool, error) {
@@ -241,59 +243,50 @@ func (h *Handler) SyncRTC(ctx context.Context) (bool, error) {
 }
 
 // syncRTCTo guards the six RTC registers against the handler clock, logging each
-// outcome, and returns whether any write was issued plus the first error seen. It
-// backs both the manual command (syncRTC) and the scheduler seam (SyncRTC).
+// outcome, and returns whether any write was issued plus the error that stopped
+// it. It backs both the manual command (syncRTC) and the scheduler seam
+// (SyncRTC).
 func (h *Handler) syncRTCTo(ctx context.Context, key string) (bool, error) {
 	regs := inverter.RTCWriteRegisters(h.now())
 	return h.writeRegisters(ctx, key, regs[:])
 }
 
 // writeRegisters guards each register in order under the given log key and
-// reports whether any write was issued plus the first error still standing. A
-// failing register does not abort the sequence: the remaining registers are still
-// attempted, so one transport hiccup cannot leave the rest of a schedule or an
-// RTC sync unattempted.
+// reports whether any write was issued plus the error that stopped the sequence
+// (nil when every register was guarded successfully).
 //
-// Every register whose guard failed without a confirmed write (res.Wrote ==
-// false) is then retried once, in the original order, after the pass. Such a
-// failure does not prove the fc06 never reached the inverter — the write can
-// land and only the reply be lost — but the retry is safe either way: it
-// re-enters the full read-before-write guard, which re-reads first and skips a
-// register that already holds the desired value, so retrying after a landed
-// write costs no extra flash wear. A register written but not confirmed by the
-// re-read is not retried: the inverter did take the write, and re-issuing it
-// would spend flash on a disagreement the next poll re-reads anyway. One retry
-// only, with no sleep, because the caller holds the API mutex for the whole
-// command.
+// A register whose guard failed without a confirmed write (res.Wrote == false) is
+// retried once, immediately, before the next register is attempted. Such a
+// failure does not prove the fc06 never reached the inverter — the write can land
+// and only the reply be lost — but the retry is safe either way: it re-enters the
+// full read-before-write guard, which re-reads first and skips a register that
+// already holds the desired value, so retrying after a landed write costs no
+// extra flash wear. No sleep separates the two attempts: the caller holds the API
+// mutex for the whole command, so nothing else reaches the inverter in between.
 //
-// The retry replaces that register's outcome: a retry that succeeds clears the
-// error its first attempt reported, and the returned error is then the first
-// error remaining in register order (nil when none remains). wrote stays true if
-// any attempt, first or retried, issued an fc06.
+// A register still failing after its retry aborts the sequence and no later
+// register is attempted; so does a register written but not confirmed by the
+// re-read, which is not retried at all because the inverter did take the write.
+// Stopping leaves the slot in the last shape the manager fully wrote — an intact
+// old window, which expires by itself, or a completed clear, which stays clear —
+// which the next reconcile can reason about, whereas writing on past the failure
+// can compose a window out of two commands' registers that the inverter was never
+// meant to hold. Stopping costs little: scheduleDiff hands the reconcile only the
+// registers that differ, so the sequence the next poll retries spends reads, not
+// writes.
 func (h *Handler) writeRegisters(ctx context.Context, key string, regs []inverter.Register) (bool, error) {
 	wrote := false
-	errs := make([]error, len(regs))
-	var lost []int
 
-	for i, reg := range regs {
+	for _, reg := range regs {
 		res, err := Guard(ctx, h.rw, reg.Addr, reg.Value)
 		h.logGuard(key, reg.Addr, reg.Value, res, err)
 		wrote = wrote || res.Wrote
-		errs[i] = err
+
 		if err != nil && !res.Wrote {
-			lost = append(lost, i)
+			res, err = Guard(ctx, h.rw, reg.Addr, reg.Value)
+			h.logGuard(key, reg.Addr, reg.Value, res, err, "retry", true)
+			wrote = wrote || res.Wrote
 		}
-	}
-
-	for _, i := range lost {
-		reg := regs[i]
-		res, err := Guard(ctx, h.rw, reg.Addr, reg.Value)
-		h.logGuard(key, reg.Addr, reg.Value, res, err, "retry", true)
-		wrote = wrote || res.Wrote
-		errs[i] = err
-	}
-
-	for _, err := range errs {
 		if err != nil {
 			return wrote, err
 		}
@@ -303,7 +296,8 @@ func (h *Handler) writeRegisters(ctx context.Context, key string, regs []inverte
 
 // guardOne runs Guard for one register and logs the outcome. The single-register
 // command paths (amps, work-mode) use it; multi-register paths go through
-// writeRegisters, which aggregates the per-register results.
+// writeRegisters, which retries once in place and aborts on the first register
+// still failing.
 func (h *Handler) guardOne(ctx context.Context, key string, addr int, value uint16) {
 	res, err := Guard(ctx, h.rw, addr, value)
 	h.logGuard(key, addr, value, res, err)
@@ -311,10 +305,10 @@ func (h *Handler) guardOne(ctx context.Context, key string, addr int, value uint
 
 // logGuard logs one guarded-write outcome, classifying a re-read mismatch (error)
 // apart from a transport failure, a skip (no-op) and a confirmed write. extra is
-// appended to every line as additional slog attributes; writeRegisters' retry
-// pass passes "retry", true so an operator can tell a register's retried line
-// apart from its first-pass line. The first pass calls with no extra, so its
-// lines are unchanged.
+// appended to every line as additional slog attributes; writeRegisters' retried
+// attempt passes "retry", true so an operator can tell a register's retried line
+// apart from its first line. The first attempt calls with no extra, so its lines
+// are unchanged.
 func (h *Handler) logGuard(key string, addr int, value uint16, res Result, err error, extra ...any) {
 	switch {
 	case err != nil && res.Wrote:

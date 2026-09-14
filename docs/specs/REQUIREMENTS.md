@@ -110,9 +110,10 @@ See the write-path sections of
 - **REQ-HA-13** Manual **"Sync RTC now" button** (`rtc_sync`): guarded per-register
   write of the six RTC holding registers `43000–43005` to the current local
   datetime, via the shared guarded loop (`writeRegisters`) that retries a
-  transport-failed register once — see `09-schedule-controls.md` **Partial
-  writes**. Periodic/threshold-gated **auto-sync** is now available (Phase 6),
-  **opt-in** via `RTC_SYNC_ENABLED` and folded into the poll — see `REQ-SC-06`.
+  transport-failed register once, in place, and aborts the sequence if it still
+  fails — see `09-schedule-controls.md` **Partial writes**. Periodic/threshold-
+  gated **auto-sync** is now available (Phase 6), **opt-in** via
+  `RTC_SYNC_ENABLED` and folded into the poll — see `REQ-SC-06`.
   Kill-switch `CONTROLS_ENABLED` (default true); **Ruling R1** — when false, the five
   command entities are **omitted from discovery**, the command topic is not
   subscribed, and both the schedule reconcile (REQ-HA-17) and RTC auto-sync are
@@ -153,9 +154,11 @@ See the write-path sections of
   unused direction is asserted empty and is always cleared first, the charge block
   leading only when both directions are unset or both are set; each block is
   written in the order start hour, start minute, end hour, end minute; `Off` clears
-  slot 3 at once. Only offsets `+2..+9` of a slot are ever written (never
-  `43151/43152`, `43161/43162`). State `boost_select` is derived from slot 3
-  (`Off`, the matching option via `15·⌈minutes/15⌉`, or `null` when unmappable).
+  slot 3 at once. A command a failed register interrupts stops there and is
+  reported; it is never completed around the failure (REQ-HA-13). Only offsets
+  `+2..+9` of a slot are ever written (never `43151/43152`, `43161/43162`). State
+  `boost_select` is derived from slot 3 (`Off`, the matching option via
+  `15·⌈minutes/15⌉`, or `null` when unmappable).
   → `schedule.BoostOptions`/`ParseBoostOption`/`PlanBoost`/`BoostSelectState`,
   `inverter.TimedSlotWriteRegisters`, `controls.Handler.setBoost`
 - **REQ-HA-17** Manager-owned schedule reconcile after every poll when controls are
@@ -171,7 +174,9 @@ See the write-path sections of
   for `boost_ends_at` (REQ-HA-14); the liveness test does not resolve it at all.
   Only registers that differ are written (guarded), so the steady state issues no
   fc06; one log line per reconcile that wrote; errors are
-  non-fatal and retried next poll. App-side slot edits are reverted within one poll
+  non-fatal and retried next poll. Healing is in slot order — the reconcile writes
+  slots 1–3 as one sequence, so a tariff-slot register that fails on every poll
+  blocks the slot-3 clear behind it until it recovers. App-side slot edits are reverted within one poll
   (only a live slot-3 window is adopted). The reconcile never touches `43110`,
   `43141`, `43142` or the slot leading pairs. It runs from the poll, after the
   state publish, so a poll that fails to publish (broker down) reconciles

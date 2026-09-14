@@ -30,7 +30,8 @@ type inputCall struct {
 // regs maps absolute register address to its current value; reads return
 // zero-filled slices for unseeded addresses. WriteHolding mutates regs so a
 // subsequent re-read observes the written value, unless overrideReread pins the
-// re-read result (to exercise a confirm mismatch). readErr / writeErr inject
+// single-register read of that address to a fixed value (to exercise a confirm
+// mismatch on one register of a sequence). readErr / writeErr inject
 // failures across every address; failReadOnce and failRead inject a read failure
 // at one address, the first consumed by the first read of that address (the
 // one-off sidecar timeout the live defect hit) and the second standing for every
@@ -44,7 +45,7 @@ type fakeRW struct {
 	writeErr       error
 	failReadOnce   map[int]error
 	failRead       map[int]error
-	overrideReread *uint16
+	overrideReread map[int]uint16
 	shortHolding   bool
 }
 
@@ -67,8 +68,8 @@ func (f *fakeRW) ReadHolding(_ context.Context, addr, count int) ([]uint16, erro
 	if f.shortHolding {
 		return []uint16{}, nil
 	}
-	if f.overrideReread != nil && count == 1 {
-		return []uint16{*f.overrideReread}, nil
+	if v, ok := f.overrideReread[addr]; ok && count == 1 {
+		return []uint16{v}, nil
 	}
 	out := make([]uint16, count)
 	for i := range out {

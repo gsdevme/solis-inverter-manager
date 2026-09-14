@@ -86,14 +86,16 @@ boost while it runs"; the per-direction form matters when a partly written slot
 holds a remnant of the window a command was clearing beside the one it
 programmed — see *Partial writes* below.
 
-**Known limitation.** While both directions of slot 3 are set — the transient
-above, which the in-command retry (see *Partial writes*) keeps to at most one
-command — `BoostOf` (`internal/schedule`) prefers the charge window, so the
-HA-facing `boost` sensor, `boost_ends_at` and `boost_select` describe the charge
-window even when the discharge window is the one actually running as the boost.
-The per-direction reconcile above is unaffected by this: it keeps both windows
-in place for as long as both still read as running, and clears each only once
-its own `end` has passed.
+**Known limitation.** While both directions of slot 3 are set, `BoostOf`
+(`internal/schedule`) prefers the charge window, so the HA-facing `boost` sensor,
+`boost_ends_at` and `boost_select` describe the charge window even when the
+discharge window is the one actually running as the boost. That state is now
+confined to the inside of a single command: a direction swap clears the old
+window first and, when that clear fails, the command **aborts** (see *Partial
+writes*) instead of arming the new direction beside the old one, so no poll finds
+the slot holding both. The per-direction reconcile above is unaffected either
+way: it judges each window on its own liveness, keeping the one that is running
+and clearing the other in the same pass.
 
 Charge/discharge current is **global** (`43141`/`43142`, the existing `number`
 entities) and is not part of the schedule.
@@ -197,25 +199,38 @@ registers each time, a skipped cycle leaves nothing stale behind.
 **Partial writes.** A slot is written one register at a time by any of the three
 write paths — the boost command, the reconcile, and the RTC sync — all of which
 share `writeRegisters` (`internal/controls`), so a transport failure can stop any
-of them mid-sequence, not only "the same command". Each register whose guard
-failed without a confirmed write (a re-read that did not confirm is left alone,
-the write having landed) is retried **once**, in the original order, after the
-pass; one retry only, no sleep, still under the same API mutex the caller already
-holds. Such a failure does not prove the fc06 never reached the inverter — the
-write can land and only the reply be lost — but the retry is safe regardless: it
-goes through the full read-before-write guard again, which re-reads first and
-skips a register that already holds the desired value, so a retry after a landed
-write costs no extra flash wear.
+of them mid-sequence, not only "the same command". A register whose guard failed
+without a confirmed write is retried **once, in place**, before the next register
+is attempted: one retry only, no sleep, still under the same API mutex the caller
+already holds. Such a failure does not prove the fc06 never reached the
+inverter — the write can land and only the reply be lost — but the retry is safe
+regardless: it goes through the full read-before-write guard again, which
+re-reads first and skips a register that already holds the desired value, so a
+retry after a landed write costs no extra flash wear.
 
-Whatever still differs after the retry is healed by the next poll's reconcile,
-which — judging expiry per direction — clears only a remnant whose window has
-*ended*. A remnant that still *reads as running* is not healed there: a lost
-end-hour write leaving, say, `00:00→14:00` in place of the intended `14:00→14:30`
-still satisfies `now < end`, so it is adopted as the boost under the
-unexpired-window rule (see *Design*) rather than cleared. The in-command retry
-above is therefore the only defence against that case; together the retry and
-the reconcile are why a boost survives a one-off sidecar timeout instead of
-being left stuck on a stale window or wiped on the following poll.
+A register that fails its retry **aborts the sequence**: the error is reported
+and no later register is attempted. So does a write the re-read did not confirm,
+which is not retried at all (the inverter took it). Aborting leaves the slot in
+the last shape the manager fully wrote — an intact old window, which expires by
+itself, or a completed clear, which stays clear — while carrying on past the
+failure can compose a window out of two commands' registers, such as a new
+direction armed beside an old one the clear never removed. Little is lost by
+stopping: the reconcile is handed only the registers that differ, so the sequence
+the next poll retries spends reads, not writes.
+
+Whatever an aborted sequence left behind is healed by the next poll's reconcile,
+which judges each direction by liveness — `start ≤ now < end` with `end ≠ 00:00`
+(see *Desired schedule*). Healing is in slot order: the reconcile writes slots
+1–3 as one sequence, so a register in the tariff slots that fails on every poll
+blocks the slot-3 clear behind it until that register recovers. A remnant that
+still reads as running is kept until its own `end`: a half-written clear leaving,
+say, `00:00→14:00` behind is adopted as the boost until 14:00 and cleared on the
+first poll after that, rather than lingering. A remnant whose end never landed — `14:07→00:00`, a command stopped
+partway through programming an empty slot — is cleared by the liveness rule on
+the next poll instead of reading as a window running to midnight. Together the
+in-place retry, the abort and the reconcile are why a one-off sidecar timeout
+leaves a boost either intact or gone, never stuck on a window the manager never
+meant to hold.
 
 **A poll whose setpoints read failed also skips the reconcile**, like a publish
 failure. The state reader reuses the last-known setpoints when the setpoints
@@ -292,6 +307,11 @@ command entities — 41 in all, the catalogue ending `…, optimal_income` (sele
   ends at `00:00` — both a tariff-shaped and a half-programmed one — and when it
   is a previous day's boost read after midnight); select-state mapping including
   the `null` case. `TimedSlotWriteRegisters` order.
+- **Unit** (`internal/controls`): a register lost to a one-off transport failure
+  is retried in place and the sequence runs on to its end; a register that fails
+  its retry aborts the sequence — a failed clear of the old direction writes no
+  register of the new one and leaves the old window intact — and a write the
+  re-read did not confirm aborts without being retried.
 - **godog** (`features/schedule_controls.feature`): a boost writes exactly the
   four registers in order and each is confirmed by re-read; `Off` clears; an
   expired slot is cleared on poll; a slot-3 window ending at `00:00` and

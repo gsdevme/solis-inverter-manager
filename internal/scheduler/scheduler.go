@@ -58,7 +58,7 @@ type HealthReporter interface {
 }
 
 // RTCSyncer performs the guarded RTC block write for opt-in auto-sync. It reports
-// whether any register was written and the first error, if any. May be nil when
+// whether any register was written and the error that stopped the sequence, if any. May be nil when
 // controls are disabled (auto-sync is then a no-op).
 type RTCSyncer interface {
 	SyncRTC(ctx context.Context) (bool, error)
@@ -66,7 +66,7 @@ type RTCSyncer interface {
 
 // Reconciler asserts the desired timed schedule against the slots a poll just
 // read, guard-writing only registers that differ. It reports whether any register
-// was written and the first error, if any. May be nil when controls are disabled
+// was written and the error that stopped the sequence, if any. May be nil when controls are disabled
 // (the reconcile is then a no-op).
 type Reconciler interface {
 	Reconcile(ctx context.Context, slots inverter.TimedSlots) (bool, error)

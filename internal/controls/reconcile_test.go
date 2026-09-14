@@ -202,9 +202,9 @@ func expiredBoostSlots() inverter.TimedSlots {
 }
 
 // TestReconcileRetriesARegisterLostToATransportFailure: a register whose guard
-// never reached the inverter is retried once after the ordered pass, so a one-off
-// timeout does not leave the schedule half written — and the retry's success
-// clears the error the first attempt reported.
+// never reached the inverter is retried at once, in place, so a one-off timeout
+// does not leave the schedule half written — and the retry's success clears the
+// error the first attempt reported.
 func TestReconcileRetriesARegisterLostToATransportFailure(t *testing.T) {
 	slots := expiredBoostSlots()
 	f := newFakeRW()
@@ -217,13 +217,13 @@ func TestReconcileRetriesARegisterLostToATransportFailure(t *testing.T) {
 	if !wrote || err != nil {
 		t.Errorf("Reconcile = (%v, %v), want (true, nil) once the retry succeeds", wrote, err)
 	}
-	wantWrites(t, f, []writeCall{{43163, 0}, {43165, 0}, {43166, 0}, {43164, 0}})
+	wantWrites(t, f, []writeCall{{43163, 0}, {43164, 0}, {43165, 0}, {43166, 0}})
 }
 
-// TestReconcileReportsARegisterThatFailsTwice: the retry is a single extra
-// attempt, so a register failing persistently still surfaces its error while
-// every other register of the sequence is written.
-func TestReconcileReportsARegisterThatFailsTwice(t *testing.T) {
+// TestReconcileAbortsOnARegisterThatFailsTwice: the retry is a single extra
+// attempt, so a register failing persistently surfaces its error and stops the
+// sequence there — the registers after it are left for the next poll.
+func TestReconcileAbortsOnARegisterThatFailsTwice(t *testing.T) {
 	slots := expiredBoostSlots()
 	f := newFakeRW()
 	seedSlots(f, slots)
@@ -235,7 +235,7 @@ func TestReconcileReportsARegisterThatFailsTwice(t *testing.T) {
 	if !wrote || err == nil {
 		t.Errorf("Reconcile = (%v, %v), want (true, an error) when a register fails twice", wrote, err)
 	}
-	wantWrites(t, f, []writeCall{{43163, 0}, {43165, 0}, {43166, 0}})
+	wantWrites(t, f, []writeCall{{43163, 0}})
 	if got := f.readsOf(43164); got != 2 {
 		t.Errorf("reads of 43164 = %d, want 2 (the attempt and one retry)", got)
 	}

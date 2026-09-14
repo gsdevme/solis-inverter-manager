@@ -55,8 +55,7 @@ func TestGuardWritesWhenDiffers(t *testing.T) {
 func TestGuardRereadMismatch(t *testing.T) {
 	f := newFakeRW()
 	f.regs[43141] = 100
-	stuck := uint16(150)
-	f.overrideReread = &stuck
+	f.overrideReread = map[int]uint16{43141: 150}
 
 	res, err := controls.Guard(context.Background(), f, 43141, 300)
 	if err == nil {

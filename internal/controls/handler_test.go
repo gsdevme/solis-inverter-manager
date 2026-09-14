@@ -319,11 +319,11 @@ func TestBoostDischargeWritesSlotThreeDischargeWindow(t *testing.T) {
 
 // TestBoostRetriesARegisterLostToATransportFailure: the live defect. A Discharge
 // boost replacing a charge window loses the guard's read of 43166 to a one-off
-// sidecar timeout; the remaining registers are still written, and the lost one is
-// retried once after the ordered pass so the old window is fully cleared rather
-// than left with a stale end minute for the next reconcile to trip over. The
-// retried line is tagged retry=true so an operator can tell it apart from the
-// first-pass line for the same address; the first-pass lines carry no such tag.
+// sidecar timeout; the register is retried immediately, in place, so the old
+// window is fully cleared before the new one is programmed and the sequence runs
+// on to its end. The retried line is tagged retry=true so an operator can tell it
+// apart from the first-pass line for the same address; the first-pass lines carry
+// no such tag.
 func TestBoostRetriesARegisterLostToATransportFailure(t *testing.T) {
 	var buf bytes.Buffer
 	f := newFakeRW()
@@ -335,9 +335,8 @@ func TestBoostRetriesARegisterLostToATransportFailure(t *testing.T) {
 	h.OnMessage(context.Background(), "solis/cmd/boost_select/set", []byte("Discharge 15 min"))
 
 	wantWrites(t, f, []writeCall{
-		{43163, 0}, {43164, 0}, {43165, 0},
+		{43163, 0}, {43164, 0}, {43165, 0}, {43166, 0},
 		{43167, 8}, {43168, 58}, {43169, 9},
-		{43166, 0},
 	})
 	if f.regs[43166] != 0 {
 		t.Errorf("43166 = %d, want 0 once the retry lands", f.regs[43166])
@@ -360,6 +359,47 @@ func TestBoostRetriesARegisterLostToATransportFailure(t *testing.T) {
 	}
 	if first != 1 {
 		t.Errorf("addr=43166 lines without retry=true = %d, want 1 (the first pass)", first)
+	}
+}
+
+// TestBoostAbortsWhenClearingTheOldDirectionFails: a register still failing after
+// its retry stops the whole command. The discharge window slot 3 is holding
+// cannot be cleared, so no charge register is written either: the slot keeps the
+// one window it already had — which expires by itself — rather than gaining a
+// second one the inverter has never been probed holding.
+func TestBoostAbortsWhenClearingTheOldDirectionFails(t *testing.T) {
+	f := newFakeRW()
+	f.regs[43110] = inverter.WorkModeTimedOn
+	f.regs[43167], f.regs[43168], f.regs[43169], f.regs[43170] = 8, 58, 9, 9
+	f.failRead = map[int]error{43167: errBoom}
+	h := controls.NewHandler(f, quietLogger(), true, nil, at(14, 7), controls.WithToU(touWindow, true))
+
+	h.OnMessage(context.Background(), "solis/cmd/boost_select/set", []byte("Charge 30 min"))
+
+	wantWrites(t, f, nil)
+	if got := f.readsOf(43167); got != 2 {
+		t.Errorf("reads of 43167 = %d, want 2 (the attempt and one retry)", got)
+	}
+	got := [4]uint16{f.regs[43167], f.regs[43168], f.regs[43169], f.regs[43170]}
+	if want := [4]uint16{8, 58, 9, 9}; got != want {
+		t.Errorf("discharge registers = %v, want %v (the old window left intact)", got, want)
+	}
+}
+
+// TestBoostAbortsAfterAnUnconfirmedWrite: a write whose re-read does not confirm
+// is not retried — the inverter took it — but it does abort the sequence, so the
+// registers after it are left alone for the next poll to reason about.
+func TestBoostAbortsAfterAnUnconfirmedWrite(t *testing.T) {
+	f := newFakeRW()
+	f.regs[43110] = inverter.WorkModeTimedOn
+	f.overrideReread = map[int]uint16{43164: 99}
+	h := controls.NewHandler(f, quietLogger(), true, nil, at(14, 7), controls.WithToU(touWindow, true))
+
+	h.OnMessage(context.Background(), "solis/cmd/boost_select/set", []byte("Charge 30 min"))
+
+	wantWrites(t, f, []writeCall{{43163, 14}, {43164, 7}})
+	if got := f.readsOf(43164); got != 2 {
+		t.Errorf("reads of 43164 = %d, want 2 (its own read and re-read, with no retry)", got)
 	}
 }
 

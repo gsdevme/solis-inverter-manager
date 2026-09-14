@@ -9,11 +9,11 @@ import (
 
 // Reconcile makes the inverter's three timed slots match the schedule the
 // manager wants it to hold (REQ-HA-17): the configured Time-of-Use tariff in
-// slots 1 and 2 when the owner asserts it, and the boost slot cleared once its
-// window has passed. The caller passes the slots just read by the poll, so the
+// slots 1 and 2 when the owner asserts it, and the boost slot cleared unless it
+// reads as a live boost. The caller passes the slots just read by the poll, so the
 // reconcile needs no read of its own, and it reports whether anything was
-// written plus the first error seen — a failure is non-fatal and the next poll
-// retries.
+// written plus the error that stopped it — a failure is non-fatal and the next
+// poll retries.
 //
 // Only the registers that differ are handed to the guard. That pre-filter is
 // what makes the steady state cost zero Modbus frames: the guard would skip an
