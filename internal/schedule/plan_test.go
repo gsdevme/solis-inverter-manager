@@ -120,7 +120,7 @@ var (
 
 func TestDesired(t *testing.T) {
 	tariff := win(23, 30, 5, 30)
-	bothRunning := inverter.TimedSlot{Charge: win(8, 0, 9, 30), Discharge: win(10, 0, 11, 0)}
+	bothRunning := inverter.TimedSlot{Charge: win(8, 0, 9, 30), Discharge: win(8, 30, 9, 30)}
 	bothStale := inverter.TimedSlot{Charge: staleCharge, Discharge: runningDischarge}
 
 	for _, tc := range []struct {
@@ -192,10 +192,55 @@ func TestDesired(t *testing.T) {
 			want:  withSlot3(inverter.TimedSlot{}),
 		},
 		{
-			name:  "keeps an end-of-day boost before midnight",
+			// A boost never ends at midnight — PlanBoost refuses one — so a slot-3
+			// window shaped like the tariff's evening half is a remnant, not a boost.
+			name:  "clears a remnant that ends at midnight",
 			slots: withSlot3(charge(win(23, 31, 0, 0))),
 			now:   at(23, 59, 0),
-			want:  withSlot3(charge(win(23, 31, 0, 0))),
+			want:  withSlot3(inverter.TimedSlot{}),
+		},
+		{
+			name:  "clears yesterday's boost after midnight",
+			slots: withSlot3(charge(win(23, 40, 23, 45))),
+			now:   at(0, 5, 0),
+			want:  withSlot3(inverter.TimedSlot{}),
+		},
+		{
+			// An owner editing slot 3 in the Solis app can set a window the
+			// inverter runs across midnight; PlanBoost never writes one, so it is
+			// a remnant whatever the clock reads.
+			name:  "clears a window whose start is after its end",
+			slots: withSlot3(charge(win(23, 40, 0, 30))),
+			now:   at(23, 50, 0),
+			want:  withSlot3(inverter.TimedSlot{}),
+		},
+		{
+			// An empty window an app edit left with equal start and end covers no
+			// minute at all, so it is never live.
+			name:  "clears a window whose start equals its end",
+			slots: withSlot3(charge(win(14, 0, 14, 0))),
+			now:   at(14, 0, 0),
+			want:  withSlot3(inverter.TimedSlot{}),
+		},
+		{
+			name:  "clears a window that has not started",
+			slots: withSlot3(charge(win(14, 7, 14, 30))),
+			now:   at(12, 0, 0),
+			want:  withSlot3(inverter.TimedSlot{}),
+		},
+		{
+			name:  "keeps a boost in its first minute",
+			slots: withSlot3(charge(win(14, 7, 14, 30))),
+			now:   at(14, 7, 30),
+			want:  withSlot3(charge(win(14, 7, 14, 30))),
+		},
+		{
+			// The end registers of a boost lost to a transport failure leave a window
+			// running to end-of-day, which the next reconcile must clear.
+			name:  "clears a program remnant that ends at midnight",
+			slots: withSlot3(charge(win(14, 7, 0, 0))),
+			now:   at(14, 10, 0),
+			want:  withSlot3(inverter.TimedSlot{}),
 		},
 		{
 			name:  "an empty boost slot stays empty",

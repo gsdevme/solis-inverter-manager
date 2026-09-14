@@ -58,9 +58,10 @@ Feature: Writable timed schedule (boost and Time-of-Use tariff)
 
   # A command interrupted mid-sequence can leave slot 3 holding the tail of the
   # window it was clearing (here a charge end minute of 56, the rest already zero)
-  # next to the discharge boost it went on to program. Expiry is judged per
-  # direction, so the reconcile clears the ended remnant and leaves the running
-  # boost alone. The unseeded slot-3 registers read 0 from the empty bank.
+  # next to the discharge boost it went on to program. Liveness is judged per
+  # direction, so the reconcile clears the remnant — 00:00-00:56 is not running at
+  # 08:59 — and leaves the running boost alone. The unseeded slot-3 registers read
+  # 0 from the empty bank.
   Scenario: A partially cleared boost is healed, not wiped, on reconcile
     Given holding register 43143 currently reads 23
     And holding register 43144 currently reads 30
@@ -72,6 +73,35 @@ Feature: Writable timed schedule (boost and Time-of-Use tariff)
     And holding register 43169 currently reads 9
     When the schedule is reconciled at 2026-09-14T08:59:00Z
     Then holding register 43166 is written once with 0
+
+  # The manager only ever writes a slot-3 window that starts now and ends before
+  # midnight, so a window ending at 00:00 is a remnant of a boost whose end
+  # registers never landed, however recently it started.
+  Scenario: A remnant ending at midnight is cleared on reconcile
+    Given holding register 43143 currently reads 23
+    And holding register 43144 currently reads 30
+    And holding register 43155 currently reads 5
+    And holding register 43156 currently reads 30
+    And holding register 43163 currently reads 14
+    And holding register 43164 currently reads 0
+    And holding register 43165 currently reads 0
+    And holding register 43166 currently reads 0
+    When the schedule is reconciled at 2026-09-14T15:00:00Z
+    Then holding register 43163 is written once with 0
+
+  # A boost that ran last night is no longer live once the clock has passed
+  # midnight, so the reconcile clears it before it can fire again tonight.
+  Scenario: Yesterday's boost is cleared after midnight
+    Given holding register 43143 currently reads 23
+    And holding register 43144 currently reads 30
+    And holding register 43155 currently reads 5
+    And holding register 43156 currently reads 30
+    And holding register 43163 currently reads 23
+    And holding register 43164 currently reads 40
+    And holding register 43165 currently reads 23
+    And holding register 43166 currently reads 45
+    When the schedule is reconciled at 2026-09-14T00:05:00Z
+    Then holding registers 43163 to 43166 are written in order with "0,0,0,0"
 
   Scenario: Time-of-Use drift is re-asserted across the midnight split
     Given holding register 43143 currently reads 23

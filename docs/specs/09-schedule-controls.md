@@ -42,8 +42,10 @@ a missed poll cannot leave a stale window to re-fire tomorrow: the next poll,
 whenever it is, fixes it.
 
 **Contract:** slots 1–3 are manager-owned. Edits made in the Solis app are
-reverted within one poll interval (a not-yet-expired slot-3 window is adopted
-as a boost, not reverted).
+reverted within one poll interval, with one narrow exception: a slot-3 window
+that reads as a **live boost** — started, not yet ended, and not ending at
+midnight — is adopted rather than reverted. Any other set slot-3 window is
+cleared.
 
 ## Configuration (`REQ-CF-07`)
 
@@ -64,12 +66,25 @@ Times are the deployment's local zone (`TZ`), the same clock the RTC code and
 - slot 1 and slot 2 **discharge** windows are asserted empty.
 
 Slot 3 desired is computed **per direction**, not per boost: each of the slot's
-two windows is kept while it is set and `now < end`, and cleared once it has
-ended. "Empty" is all four H/M registers of a window = 0 (see *Open item* on how
-a clear is written). In the normal case only one direction is ever set and the
-rule reads as "the boost while it runs"; the per-direction form matters when a
-partly written slot holds a remnant of the window a command was clearing beside
-the one it programmed — see *Partial writes* below.
+two windows is kept while it is **live** and cleared otherwise. A window is live
+when it is set, `start ≤ now < end` in minute-of-day terms, and `end ≠ 00:00`.
+"Empty" is all four H/M registers of a window = 0 (see *Open item* on how a clear
+is written).
+
+Clearing everything else is safe because the manager only ever writes one shape
+into slot 3: `PlanBoost` starts a boost at the current minute and ends it on a
+quarter-hour strictly before midnight (it refuses anything that would reach
+`00:00`). So a slot-3 window that has not started, that ends at `00:00`, or whose
+window sits wholly in the past is a **remnant** — a command whose end registers
+never landed, or a boost programmed on an earlier day — and never a boost worth
+keeping. Judging by `end` alone re-adopted both cases indefinitely: an `end` of
+`00:00` resolves to a midnight that is always still ahead, and yesterday's
+`23:40→23:45` reads as tonight's.
+
+In the normal case only one direction is ever set and the rule reads as "the
+boost while it runs"; the per-direction form matters when a partly written slot
+holds a remnant of the window a command was clearing beside the one it
+programmed — see *Partial writes* below.
 
 **Known limitation.** While both directions of slot 3 are set — the transient
 above, which the in-command retry (see *Partial writes*) keeps to at most one
@@ -119,11 +134,14 @@ strings):
 
 **Selecting `Off`** clears slot 3 immediately (same eight registers, same order).
 
-**Expiry:** any poll where `now ≥ end` clears the window that ended — that
-direction's four registers only, never the other direction's. The inverter stops
-the window at `end` by itself; clearing only prevents the window firing again
-tomorrow, so lagging by up to one poll interval is acceptable and documented. An
-`end` of `00:00` means end-of-day and resolves to the next midnight.
+**Expiry:** any poll at which a slot-3 window is not live — `now` outside
+`[start, end)`, or `end = 00:00` — clears that window: that direction's four
+registers only, never the other direction's. The inverter stops the window at
+`end` by itself; clearing only prevents the window firing again tomorrow, so
+lagging by up to one poll interval is acceptable and documented. The liveness
+test is in minute-of-day terms and never resolves `end = 00:00` to the next
+midnight — that resolution survives only in `boost_ends_at` (`REQ-HA-14`), which
+still renders an end-of-day window as tomorrow's midnight.
 
 **Why that write order.** Writes take effect immediately and there is no
 multi-register write in the stack (sidecar is fc06-only), so a window is set
@@ -238,7 +256,7 @@ command entities — 41 in all, the catalogue ending `…, optimal_income` (sele
 
 - `internal/schedule` (pure): `ParseToUWindow(s) (window, enabled, err)`,
   `ToUSlots(tou) [2]TimedSlot` (the midnight split), `Desired(tou, assertToU,
-  slots, now)` (slot-3 expiry per direction), `BoostOptions()`,
+  slots, now)` (slot-3 liveness per direction), `BoostOptions()`,
   `ParseBoostOption(s)`,
   `PlanBoost(mode, minutes, now, tou, assertToU)` (snap + rejection rules,
   returning `ErrCrossesMidnight` / `ErrOverlapsToU`), `BoostSelectState(slots)`.
@@ -269,15 +287,19 @@ command entities — 41 in all, the catalogue ending `…, optimal_income` (sele
 - **Unit** (`internal/schedule`): quarter-hour snap for all four `:NN` offsets ×
   4 durations; midnight and ToU-overlap rejections; `Desired` for crossing and
   non-crossing windows and for `TOU_WINDOW=`; per-direction expiry (a stale
-  window beside a running one, both stale, both running); select-state mapping
-  including the `null` case. `TimedSlotWriteRegisters` order.
+  window beside a running one, both stale, both running); slot-3 liveness (a
+  window kept in its first minute, and cleared when it has not started, when it
+  ends at `00:00` — both a tariff-shaped and a half-programmed one — and when it
+  is a previous day's boost read after midnight); select-state mapping including
+  the `null` case. `TimedSlotWriteRegisters` order.
 - **godog** (`features/schedule_controls.feature`): a boost writes exactly the
   four registers in order and each is confirmed by re-read; `Off` clears; an
-  expired slot is cleared on poll; ToU drift is re-asserted and an equal ToU
-  produces `no holding register is written`; a boost while Optimal Income is
-  Stop is rejected with no write; a partially cleared slot is healed with one
-  write rather than wiped; `optimal_income` `Run`/`Stop` flips bit 1 only; the
-  retained state carries `boost_select`.
+  expired slot is cleared on poll; a slot-3 window ending at `00:00` and
+  yesterday's boost read after midnight are both cleared; ToU drift is
+  re-asserted and an equal ToU produces `no holding register is written`; a boost
+  while Optimal Income is Stop is rejected with no write; a partially cleared
+  slot is healed with one write rather than wiped; `optimal_income` `Run`/`Stop`
+  flips bit 1 only; the retained state carries `boost_select`.
 - **Live smoke (exit criterion):** one 15-min boost lands on the correct
   quarter-hour and the sensors follow; after the end the next poll clears slot
   3; the ToU window is restored after an app-side edit; steady-state polls issue

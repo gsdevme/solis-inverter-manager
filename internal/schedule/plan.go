@@ -80,7 +80,7 @@ func ToUSlots(tou inverter.TimedWindow) [2]inverter.TimedSlot {
 // Desired builds the schedule the inverter should hold: slots 1 and 2 carry the
 // Time-of-Use tariff when the manager asserts it (otherwise whatever the
 // inverter already holds is left alone), and the boost slot keeps every window
-// that is still running while clearing each one that has ended.
+// that reads as a live boost while clearing any other window it holds.
 //
 // A zero tariff window is never asserted, whatever assertToU says: asserting it
 // would clear the owner's own schedule rather than leave it alone, which is the
@@ -95,30 +95,42 @@ func Desired(tou inverter.TimedWindow, assertToU bool, slots inverter.TimedSlots
 	return desired
 }
 
-// running keeps each of the slot's two windows while it has not ended and zeroes
-// each one that has, judging the directions independently.
+// running keeps each of the slot's two windows while it is live and zeroes each
+// one that is not, judging the directions independently.
+//
+// Live is the narrow shape a boost has: PlanBoost only ever writes a window
+// starting at the current minute and ending on a quarter-hour strictly before
+// midnight, so any other set window in the boost slot is a remnant — a partial
+// write whose end registers never landed, or a boost from a previous day — and
+// cannot be a boost worth keeping. Judging by end alone re-adopted both: an end
+// of 00:00 never arrives, and a yesterday window's end reads as still ahead.
 //
 // Per direction rather than per boost because a boost is written one register at
 // a time: a command interrupted by a transport failure can leave the slot holding
 // a half-cleared window of the old direction alongside the freshly programmed
-// new one. Expiring the slot as a whole would read the stale window's end as the
+// new one. Judging the slot as a whole would read the remnant's window as the
 // boost's own and wipe the running window with it, escalating one failed
 // register into a destroyed boost. Judged per direction, the next reconcile
-// clears only what has ended and so heals the partial write instead.
+// clears only the remnant and so heals the partial write instead.
 func running(slot inverter.TimedSlot, now time.Time) inverter.TimedSlot {
-	if ended(slot.Charge, now) {
+	if !live(slot.Charge, now) {
 		slot.Charge = inverter.TimedWindow{}
 	}
-	if ended(slot.Discharge, now) {
+	if !live(slot.Discharge, now) {
 		slot.Discharge = inverter.TimedWindow{}
 	}
 	return slot
 }
 
-// ended reports whether a set window has run its course by now, which is when the
-// reconcile clears it. An unset window has nothing to end.
-func ended(w inverter.TimedWindow, now time.Time) bool {
-	return !w.IsZero() && !now.Before(endsAt(w, now))
+// live reports whether a window reads as a boost the reconcile should keep: set,
+// ending before midnight, and covering now in minute-of-day terms. An unset
+// window is never live, and clearing one is a no-op.
+func live(w inverter.TimedWindow, now time.Time) bool {
+	if w.IsZero() || isMidnight(w.End) {
+		return false
+	}
+	nowMinute := minuteOf(now)
+	return minuteOfDay(w.Start) <= nowMinute && nowMinute < minuteOfDay(w.End)
 }
 
 // BoostOptions lists the Home Assistant select options in order: Off, then each
@@ -172,7 +184,7 @@ func PlanBoost(mode Mode, minutes int, now time.Time, tou inverter.TimedWindow, 
 		return inverter.TimedSlot{}, fmt.Errorf("plan boost: %d minutes is not a positive multiple of %d", minutes, boostStep)
 	}
 
-	start := now.Hour()*60 + now.Minute()
+	start := minuteOf(now)
 	end := (start/boostStep+1)*boostStep + minutes - boostStep
 	if end >= minutesPerDay {
 		return inverter.TimedSlot{}, fmt.Errorf("%d min boost from %s: %w", minutes, clockAt(start), ErrCrossesMidnight)
@@ -232,6 +244,12 @@ func overlaps(w inverter.TimedWindow, start, end int) bool {
 // that merely touch at a boundary do not.
 func intersects(aStart, aEnd, bStart, bEnd int) bool {
 	return aStart < bEnd && bStart < aEnd
+}
+
+// minuteOf converts an instant's wall clock, in its own location, to minutes
+// since midnight, dropping the seconds.
+func minuteOf(now time.Time) int {
+	return now.Hour()*60 + now.Minute()
 }
 
 // minuteOfDay converts a clock to minutes since midnight.

@@ -9,13 +9,15 @@
 //
 // The write side is declarative. Desired builds the schedule the inverter should
 // hold — the configured Time-of-Use window (ParseToUWindow, ToUSlots) in slots 1
-// and 2, and the boost slot keeping every window still running while clearing
-// each one that has ended — which a reconciler elsewhere makes true one guarded
-// register write at a time. Expiry is judged per direction, so a boost written
-// only in part (a register lost to a transport failure) is healed by the next
-// reconcile rather than escalated into a wiped slot. PlanBoost turns a select
-// command into the slot to hold, snapping the end to the quarter-hour grid and
-// refusing a boost that would cross midnight or run inside the tariff window;
+// and 2, and the boost slot keeping only the windows that read as a live boost —
+// which a reconciler elsewhere makes true one guarded register write at a time.
+// Live is the narrow shape PlanBoost writes: start ≤ now < end in minute-of-day
+// terms, with an end that is not 00:00. Any other set window is a remnant and is
+// cleared. Liveness is judged per direction, so a boost written only in part (a
+// register lost to a transport failure) is healed by the next reconcile rather
+// than escalated into a wiped slot. PlanBoost turns a select command into the
+// slot to hold, snapping the end to the quarter-hour grid and refusing a boost
+// that would cross midnight or run inside the tariff window;
 // BoostSelectState maps the registers back to the select's state.
 //
 // The package is pure: no I/O, no configuration and no clock of its own — the

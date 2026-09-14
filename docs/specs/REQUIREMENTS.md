@@ -160,14 +160,19 @@ See the write-path sections of
   `inverter.TimedSlotWriteRegisters`, `controls.Handler.setBoost`
 - **REQ-HA-17** Manager-owned schedule reconcile after every poll when controls are
   enabled: slots 1–2 are asserted to `TOU_WINDOW` split at midnight (discharge windows
-  empty; skipped entirely when `TOU_WINDOW` is empty) and an expired slot-3 boost
-  (`now ≥ end`) is cleared. Slot-3 expiry is judged **per direction** — each window
-  is kept while it runs and cleared once it has ended — so a slot left holding the
+  empty; skipped entirely when `TOU_WINDOW` is empty) and a slot-3 window that is not
+  a **live boost** is cleared. Live means set, `start ≤ now < end` in minute-of-day
+  terms, and `end ≠ 00:00`; it is judged **per direction**, so a slot left holding the
   remnant of a partly written command is healed rather than wiped along with the
-  window still running. Only registers that differ are written (guarded), so the
-  steady state issues no fc06; one log line per reconcile that wrote; errors are
+  window still running. The adoption contract is exactly that narrow: a window that
+  has not started, that ends at `00:00` (a shape `PlanBoost` never writes, so it can
+  only be a half-programmed boost) or that belongs to a previous day is a remnant and
+  is cleared rather than re-fired. `end = 00:00` still resolves to the next midnight
+  for `boost_ends_at` (REQ-HA-14); the liveness test does not resolve it at all.
+  Only registers that differ are written (guarded), so the steady state issues no
+  fc06; one log line per reconcile that wrote; errors are
   non-fatal and retried next poll. App-side slot edits are reverted within one poll
-  (an unexpired slot-3 window is adopted). The reconcile never touches `43110`,
+  (only a live slot-3 window is adopted). The reconcile never touches `43110`,
   `43141`, `43142` or the slot leading pairs. It runs from the poll, after the
   state publish, so a poll that fails to publish (broker down) reconciles
   nothing that cycle; a poll whose setpoints read failed — and therefore reused
