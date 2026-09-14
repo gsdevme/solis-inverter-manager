@@ -31,6 +31,7 @@ holds real secrets.
 | `MQTT_CLIENT_ID` | `solis-inverter-manager` | no | MQTT client id. |
 | `MQTT_TOPIC_PREFIX` | `solis` | no | Base topic prefix. |
 | `HA_DISCOVERY_PREFIX` | `homeassistant` | no | HA discovery prefix. |
+| `HA_OBJECT_ID_PREFIX` | `solis_inverter` | no | Entity-id prefix: HA derives each `entity_id` as `<component>.<prefix>_<key>` (e.g. `sensor.solis_inverter_battery_soc`). Must match `^[a-z0-9_]+$`. Does not affect `unique_id` or the discovery topic. |
 | `HEALTH_ADDR` | `:8080` | no | Listen address for `/`, `/healthz` and `/readyz`. |
 | `LOG_LEVEL` | `info` | no | `debug`/`info`/`warn`/`error` (`log/slog`). |
 | `LOG_FORMAT` | `json` | no | `json` or `text`. |
@@ -44,6 +45,8 @@ holds real secrets.
 - `POLL_INTERVAL` below the `5s` floor is rejected; `INVERTER_PORT` in `1–65535`;
   `INVERTER_SOCKET_TIMEOUT > 0`; `FAILURE_THRESHOLD >= 1`; `POLL_MAX_RETRIES >= 0`;
   `RTC_DRIFT_THRESHOLD > 0`.
+- `HA_OBJECT_ID_PREFIX` must be a non-empty slug matching `^[a-z0-9_]+$`, so the
+  derived `<component>.<prefix>_<key>` is always a valid Home Assistant entity id.
 - `TOU_WINDOW` must be empty or parse as `HH:MM-HH:MM` (`schedule.ParseToUWindow`);
   an unparseable value fails validation naming `TOU_WINDOW`.
 - **Secrets** (`INVERTER_SERIAL`, `MQTT_PASSWORD`) are never logged: the config's

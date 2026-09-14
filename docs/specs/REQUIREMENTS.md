@@ -48,7 +48,8 @@ payload shapes and the 36-entity table.
   `<HA_DISCOVERY_PREFIX>/<component>/<serial>_<key>/config` (object_id form);
   identical shared device block (`identifiers:[<serial>]`, `manufacturer:"Solis"`,
   `model:"RHI-3.6K-48ES-5G"`, `name:"Solis Inverter"`); `~` = base topic and the
-  only abbreviated key; `unique_id` = `object_id` = `<serial>_<key>`.
+  only abbreviated key; `unique_id` = `<serial>_<key>`; entity ids come from
+  `HA_OBJECT_ID_PREFIX` (REQ-HA-18).
   → `homeassistant/discovery.go`, `homeassistant/entities.go`, `publisher/publisher.go`
 - **REQ-HA-02** State: a single **retained**, QoS-1 JSON document at `<base>/state`;
   every entity reads it via `value_template {{ value_json.<key> }}` (binary_sensor
@@ -185,6 +186,16 @@ See the write-path sections of
   on a slot the cycle did not read. → `controls.Handler.Reconcile`,
   `scheduler.Reconciler` (the consumer-defined interface `Scheduler.maybeReconcile`
   calls), gated by `cmd.setpointFreshness`
+- **REQ-HA-18** Entity-id derivation: `object_id` = `<HA_OBJECT_ID_PREFIX>_<key>`
+  and `default_entity_id` = `<component>.<HA_OBJECT_ID_PREFIX>_<key>`, so Home
+  Assistant assigns e.g. `sensor.solis_inverter_battery_soc`. `unique_id` stays
+  `<serial>_<key>` and the discovery topic keeps its `<serial>_<key>` node segment,
+  so changing the prefix renames entity ids without orphaning registry entries.
+  **Both** id keys are published: current cores read `default_entity_id` and ignore
+  a payload `object_id`, older cores read only `object_id`, and the MQTT platform
+  discovery schemas drop unknown keys (`extra=vol.REMOVE_EXTRA`) rather than
+  rejecting the config. → `homeassistant/discovery.go`, `homeassistant/entities.go`,
+  `config.go`, `cmd/serve.go`
 
 ## Scheduling (`internal/scheduler`, `04-polling-scheduling.md`)
 
@@ -235,6 +246,9 @@ health-driven readiness.
   default. Gated by `CONTROLS_ENABLED` like every write; set with controls off,
   it logs a startup warning. → `config.go`, `schedule.ParseToUWindow`, `.env.dist`,
   `09-schedule-controls.md`
+- **REQ-CF-08** `HA_OBJECT_ID_PREFIX` (default `solis_inverter`) must be a non-empty
+  slug matching `^[a-z0-9_]+$`; it is the entity-id prefix of REQ-HA-18 and is plumbed
+  into `homeassistant.Config.ObjectIDPrefix`. → `config.go`, `.env.dist`, `cmd/serve.go`
 
 ## Lifecycle & health (`internal/server`, `cmd`, `main.go`, `06-lifecycle-health.md`)
 

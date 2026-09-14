@@ -20,16 +20,35 @@ const (
 	DeviceName   = "Solis Inverter"
 )
 
+// DefaultObjectIDPrefix is the entity-id prefix used when a Config leaves
+// ObjectIDPrefix empty. It is also the default of HA_OBJECT_ID_PREFIX, so
+// entity ids read as sensor.solis_inverter_<key> out of the box.
+const DefaultObjectIDPrefix = "solis_inverter"
+
 // Config identifies the topics and device metadata for one inverter's discovery.
 // Serial is the datalogger (Solarman) serial that identifies the device in HA.
 type Config struct {
 	DiscoveryPrefix string // e.g. "homeassistant"
 	TopicPrefix     string // e.g. "solis"
 	Serial          string // datalogger serial (device identifier)
+	// ObjectIDPrefix is the slug Home Assistant derives entity ids from:
+	// <component>.<ObjectIDPrefix>_<key>. It is deliberately independent of
+	// Serial, which stays the unique_id and device scope. Empty falls back to
+	// DefaultObjectIDPrefix, so a Config can never emit a bare "_<key>".
+	ObjectIDPrefix string
 	// ControlsEnabled gates the writable command entities. When false (the
 	// default), BuildDiscovery emits only the read-only sensors; when true it
 	// also emits the Number/Select/Button controls.
 	ControlsEnabled bool
+}
+
+// objectID is the entity-id slug for one key, <ObjectIDPrefix>_<key>.
+func (c Config) objectID(key string) string {
+	prefix := c.ObjectIDPrefix
+	if prefix == "" {
+		prefix = DefaultObjectIDPrefix
+	}
+	return prefix + "_" + key
 }
 
 // BaseTopic is the per-inverter base topic used as the `~` abbreviation.

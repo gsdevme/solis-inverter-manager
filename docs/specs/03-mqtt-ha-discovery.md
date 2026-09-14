@@ -50,6 +50,8 @@ reference.
   `sensor` or `binary_sensor` for the read-only catalogue, `number`, `select` or
   `button` for the controls. This is the **object_id form** of the discovery
   topic (`<serial>_<key>` is the node segment, not a `node_id/object_id` pair).
+  The node segment is always serial-scoped and is **not** affected by
+  `HA_OBJECT_ID_PREFIX`.
 
 In every discovery payload `~` is set to `<base>`, and `~` is the **only**
 abbreviated key: `state_topic` and `availability_topic` are written as `~/state`
@@ -81,7 +83,8 @@ Keys present in every discovery payload (`buildEntityPayload`):
 | `~` | `<base>` (the only abbreviated key) |
 | `name` | entity `Name` |
 | `unique_id` | `<serial>_<key>` |
-| `object_id` | `<serial>_<key>` |
+| `object_id` | `<HA_OBJECT_ID_PREFIX>_<key>` |
+| `default_entity_id` | `<component>.<HA_OBJECT_ID_PREFIX>_<key>` |
 | `state_topic` | `~/state` |
 | `availability_topic` | `~/availability` |
 | `payload_available` | `online` |
@@ -97,6 +100,38 @@ Emitted only when non-empty for the entity: `device_class`, `state_class`,
 - sensor: `{{ value_json.<key> }}`
 - binary_sensor: `{{ 'ON' if value_json.<key> else 'OFF' }}` and the payload adds
   `payload_on: "ON"` / `payload_off: "OFF"`.
+
+### Entity-id derivation — `HA_OBJECT_ID_PREFIX`
+
+Identity is split deliberately three ways:
+
+- **`unique_id` = `<serial>_<key>`** — the registry key. It stays serial-scoped so
+  an entity keeps its registry row, history and user customisation regardless of
+  what the entity ids are renamed to.
+- **`object_id` / `default_entity_id` = `<HA_OBJECT_ID_PREFIX>_<key>`** — what Home
+  Assistant derives the `entity_id` from. `HA_OBJECT_ID_PREFIX` defaults to
+  `solis_inverter`, so the default entity ids read
+  `sensor.solis_inverter_battery_soc` rather than
+  `sensor.<datalogger serial>_battery_soc`.
+- **the discovery topic node segment** stays `<serial>_<key>` (above).
+
+**Both id keys are emitted, on purpose.** Current Home Assistant cores derive the
+entity id from `default_entity_id` — the MQTT docs state that the topic's
+`<object_id>` "does not influence the resulting `entity_id`; use
+`default_entity_id` if you need to control the `entity_id`", and that with
+`default_entity_id` set to `sensor.test` "Home Assistant will try to assign
+`sensor.test` as `entity_id`" — and no longer read a payload `object_id`
+(it is absent from `homeassistant/components/mqtt/const.py`). Older cores
+understand only `object_id`. Emitting both is safe because each MQTT platform's
+discovery schema is built with voluptuous `REMOVE_EXTRA`
+(`DISCOVERY_SCHEMA = vol.All(_PLATFORM_SCHEMA_BASE.extend({}, extra=vol.REMOVE_EXTRA), ...)`),
+so a core silently drops the key it does not know instead of rejecting the config.
+Note `default_entity_id` carries the **domain** (`sensor.solis_inverter_battery_soc`)
+where `object_id` is bare (`solis_inverter_battery_soc`).
+
+Changing `HA_OBJECT_ID_PREFIX` renames entity ids but orphans nothing: `unique_id`
+and the discovery topic are unchanged, so Home Assistant updates the existing
+registry entries in place.
 
 **Deletion semantics:** publishing an empty retained payload to a discovery topic
 removes the entity in Home Assistant. The manager uses this only to clear configs

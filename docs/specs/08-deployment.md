@@ -66,8 +66,8 @@ mounted with `envFrom` so the manager sees the full env catalogue from
 - **ConfigMap** — `MODE`, `INVERTER_IP`, `INVERTER_PORT`, `POLL_INTERVAL`,
   `POLL_MAX_RETRIES`, `FAILURE_THRESHOLD`, `CONTROLS_ENABLED`, `TOU_WINDOW`,
   `RTC_SYNC_ENABLED`, `RTC_DRIFT_THRESHOLD`, `MQTT_BROKER_URL`, `MQTT_USERNAME`,
-  `MQTT_CLIENT_ID`, `MQTT_TOPIC_PREFIX`, `HA_DISCOVERY_PREFIX`, `HEALTH_ADDR`,
-  `LOG_LEVEL`, `LOG_FORMAT`.
+  `MQTT_CLIENT_ID`, `MQTT_TOPIC_PREFIX`, `HA_DISCOVERY_PREFIX`,
+  `HA_OBJECT_ID_PREFIX`, `HEALTH_ADDR`, `LOG_LEVEL`, `LOG_FORMAT`.
 - **Secret** — `INVERTER_SERIAL` (datalogger serial) and `MQTT_PASSWORD`. These are
   the two values `config` redacts in logs; keep them out of the ConfigMap.
 
@@ -134,6 +134,7 @@ data:
   MQTT_CLIENT_ID: "solis-inverter-manager"
   MQTT_TOPIC_PREFIX: "solis"
   HA_DISCOVERY_PREFIX: "homeassistant"
+  HA_OBJECT_ID_PREFIX: "solis_inverter"
   HEALTH_ADDR: ":8080"
   LOG_LEVEL: "info"
   LOG_FORMAT: "json"

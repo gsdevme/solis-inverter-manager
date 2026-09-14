@@ -60,8 +60,14 @@ Give every entity the **same** `device` block so HA groups them under one device
     "name": "Solis Inverter" } }
 ```
 
-`unique_id` and `object_id` = `<serial>_<key>` (stable, unique). `unique_id` is required
-for the entity to be editable in the HA UI.
+`unique_id` = `<serial>_<key>` (stable, unique) — required for the entity to be editable
+in the HA UI, and deliberately serial-scoped so a rename never orphans the registry row.
+**Entity ids come from a separate prefix** (`HA_OBJECT_ID_PREFIX`, default
+`solis_inverter`): publish `object_id` = `<prefix>_<key>` **and**
+`default_entity_id` = `<component>.<prefix>_<key>`, so HA assigns
+`sensor.solis_inverter_battery_soc`. Current cores read `default_entity_id` and ignore a
+payload `object_id`; older cores read only `object_id`; emitting both is safe because the
+MQTT platform discovery schemas drop unknown keys (`extra=vol.REMOVE_EXTRA`).
 
 ## Availability (LWT)
 

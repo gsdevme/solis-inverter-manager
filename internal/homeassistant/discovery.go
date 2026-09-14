@@ -54,13 +54,30 @@ func (c Config) BuildDiscoveryRemovals() []Message {
 
 // buildEntityPayload assembles the discovery JSON for one entity. Only the `~`
 // base topic is abbreviated; every other key is spelled out in full.
+//
+// Identity is split three ways on purpose:
+//
+//   - unique_id is <Serial>_<key>, so an entity keeps its registry row (and any
+//     user customisation) even if the entity-id prefix is later changed.
+//   - object_id and default_entity_id are <ObjectIDPrefix>_<key>, the slug Home
+//     Assistant derives the entity_id from.
+//
+// Both id keys are emitted because current Home Assistant cores derive the
+// entity_id from default_entity_id ("if we have set default_entity_id to
+// sensor.test, then Home Assistant will try to assign sensor.test") and no
+// longer read object_id from the payload, while older cores only understand
+// object_id. Emitting both is safe: the MQTT platform discovery schemas are
+// built with voluptuous REMOVE_EXTRA, so a key a core does not know is dropped
+// rather than failing validation. default_entity_id carries the domain, so it
+// is "<component>.<ObjectIDPrefix>_<key>" where object_id is bare.
 func (c Config) buildEntityPayload(e Entity, device map[string]any) map[string]any {
-	uniq := c.Serial + "_" + e.Key
+	objectID := c.objectID(e.Key)
 	p := map[string]any{
 		"~":                     c.BaseTopic(),
 		"name":                  e.Name,
-		"unique_id":             uniq,
-		"object_id":             uniq,
+		"unique_id":             c.Serial + "_" + e.Key,
+		"object_id":             objectID,
+		"default_entity_id":     e.Component + "." + objectID,
 		"availability_topic":    "~/availability",
 		"payload_available":     "online",
 		"payload_not_available": "offline",

@@ -3,11 +3,17 @@ package homeassistant
 import (
 	"encoding/json"
 	"reflect"
+	"strings"
 	"testing"
 )
 
 func testConfig() Config {
-	return Config{DiscoveryPrefix: "homeassistant", TopicPrefix: "solis", Serial: "1234567890"}
+	return Config{
+		DiscoveryPrefix: "homeassistant",
+		TopicPrefix:     "solis",
+		Serial:          "1234567890",
+		ObjectIDPrefix:  "solis_inverter",
+	}
 }
 
 // wantMessages counts the discovery messages a config should emit: every entity
@@ -81,14 +87,70 @@ func TestDiscoveryTopicAndSharedFields(t *testing.T) {
 	if p["payload_available"] != "online" || p["payload_not_available"] != "offline" {
 		t.Errorf("availability payloads = %v / %v", p["payload_available"], p["payload_not_available"])
 	}
-	if p["unique_id"] != "1234567890_battery_soc" || p["object_id"] != "1234567890_battery_soc" {
-		t.Errorf("unique_id/object_id = %v / %v", p["unique_id"], p["object_id"])
+	if p["unique_id"] != "1234567890_battery_soc" {
+		t.Errorf("unique_id = %v", p["unique_id"])
+	}
+	if p["object_id"] != "solis_inverter_battery_soc" {
+		t.Errorf("object_id = %v", p["object_id"])
+	}
+	if p["default_entity_id"] != "sensor.solis_inverter_battery_soc" {
+		t.Errorf("default_entity_id = %v", p["default_entity_id"])
 	}
 	if p["value_template"] != "{{ value_json.battery_soc }}" {
 		t.Errorf("value_template = %v", p["value_template"])
 	}
 	if p["device_class"] != "battery" || p["state_class"] != "measurement" || p["unit_of_measurement"] != "%" {
 		t.Errorf("classes = %v / %v / %v", p["device_class"], p["state_class"], p["unit_of_measurement"])
+	}
+}
+
+// TestDiscoveryEntityIDPrefix pins the entity-id derivation: object_id and
+// default_entity_id follow ObjectIDPrefix, unique_id stays serial-scoped, and the
+// discovery topic keeps the serial node segment.
+func TestDiscoveryEntityIDPrefix(t *testing.T) {
+	c := testConfig()
+	c.ObjectIDPrefix = "house_solis"
+	c.ControlsEnabled = true
+	byTopic := mustBuildDiscoveryFor(t, c)
+
+	cases := map[string]string{
+		"homeassistant/sensor/1234567890_battery_soc/config":             "sensor.house_solis_battery_soc",
+		"homeassistant/binary_sensor/1234567890_battery_charging/config": "binary_sensor.house_solis_battery_charging",
+		"homeassistant/number/1234567890_set_charge_current/config":      "number.house_solis_set_charge_current",
+		"homeassistant/select/1234567890_optimal_income/config":          "select.house_solis_optimal_income",
+		"homeassistant/button/1234567890_rtc_sync/config":                "button.house_solis_rtc_sync",
+	}
+	for topic, wantEntityID := range cases {
+		p := byTopic[topic]
+		if p == nil {
+			t.Fatalf("missing %s", topic)
+		}
+		if p["default_entity_id"] != wantEntityID {
+			t.Errorf("%s default_entity_id = %v, want %v", topic, p["default_entity_id"], wantEntityID)
+		}
+		_, key, _ := strings.Cut(wantEntityID, ".")
+		if p["object_id"] != key {
+			t.Errorf("%s object_id = %v, want %v", topic, p["object_id"], key)
+		}
+	}
+
+	// unique_id is registry-stable and must not follow the prefix.
+	if uid := byTopic["homeassistant/sensor/1234567890_battery_soc/config"]["unique_id"]; uid != "1234567890_battery_soc" {
+		t.Errorf("unique_id = %v, want 1234567890_battery_soc", uid)
+	}
+}
+
+// TestDiscoveryEntityIDPrefixFallback covers a Config built without an explicit
+// prefix: it must still emit a valid entity id, never a bare "_key".
+func TestDiscoveryEntityIDPrefixFallback(t *testing.T) {
+	c := testConfig()
+	c.ObjectIDPrefix = ""
+	p := mustBuildDiscoveryFor(t, c)["homeassistant/sensor/1234567890_battery_soc/config"]
+	if p["object_id"] != DefaultObjectIDPrefix+"_battery_soc" {
+		t.Errorf("object_id = %v", p["object_id"])
+	}
+	if p["default_entity_id"] != "sensor."+DefaultObjectIDPrefix+"_battery_soc" {
+		t.Errorf("default_entity_id = %v", p["default_entity_id"])
 	}
 }
 

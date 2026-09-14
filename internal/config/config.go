@@ -9,10 +9,12 @@ import (
 	"log/slog"
 	"net/url"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/gsdevme/solis-inverter-manager/internal/homeassistant"
 	"github.com/gsdevme/solis-inverter-manager/internal/schedule"
 )
 
@@ -25,6 +27,11 @@ const defaultToUWindow = "23:30-05:30"
 
 // redacted is the placeholder printed in place of any secret value.
 const redacted = "REDACTED"
+
+// objectIDPrefixPattern constrains HA_OBJECT_ID_PREFIX to the character set Home
+// Assistant allows in an entity-id slug, so the derived
+// <component>.<prefix>_<key> is always a valid entity id.
+var objectIDPrefixPattern = regexp.MustCompile(`^[a-z0-9_]+$`)
 
 // Config is the fully-parsed, validated service configuration.
 //
@@ -63,6 +70,11 @@ type Config struct {
 	MQTTClientID      string
 	MQTTTopicPrefix   string
 	HADiscoveryPrefix string
+	// HAObjectIDPrefix is the slug Home Assistant derives entity ids from:
+	// <component>.<HAObjectIDPrefix>_<key>, e.g.
+	// sensor.solis_inverter_battery_soc. It does not affect unique_id or the
+	// discovery topic, both of which stay scoped to the datalogger serial.
+	HAObjectIDPrefix string
 
 	// Controls
 	// ControlsEnabled gates the writable HA command entities and the command
@@ -95,6 +107,7 @@ func Load() (*Config, error) {
 		MQTTClientID:      getEnv("MQTT_CLIENT_ID", "solis-inverter-manager"),
 		MQTTTopicPrefix:   getEnv("MQTT_TOPIC_PREFIX", "solis"),
 		HADiscoveryPrefix: getEnv("HA_DISCOVERY_PREFIX", "homeassistant"),
+		HAObjectIDPrefix:  getEnv("HA_OBJECT_ID_PREFIX", homeassistant.DefaultObjectIDPrefix),
 		HealthAddr:        getEnv("HEALTH_ADDR", ":8080"),
 		LogLevel:          strings.ToLower(getEnv("LOG_LEVEL", "info")),
 		LogFormat:         strings.ToLower(getEnv("LOG_FORMAT", "json")),
@@ -129,6 +142,11 @@ func Load() (*Config, error) {
 	}
 	if _, err := url.Parse(c.SidecarURL); err != nil {
 		errs = append(errs, fmt.Errorf("SIDECAR_URL is invalid: %w", err))
+	}
+
+	if !objectIDPrefixPattern.MatchString(c.HAObjectIDPrefix) {
+		errs = append(errs, fmt.Errorf("HA_OBJECT_ID_PREFIX %q must be a non-empty slug matching %s",
+			c.HAObjectIDPrefix, objectIDPrefixPattern))
 	}
 
 	c.InverterPort = getInt("INVERTER_PORT", 8899)
@@ -213,12 +231,13 @@ func (c *Config) String() string {
 	return fmt.Sprintf("Config{mode=%s inverterIP=%s inverterSerial=%s inverterPort=%d "+
 		"socketTimeout=%s sidecar=%s poll=%s maxRetries=%d failThreshold=%d "+
 		"rtcSyncEnabled=%t rtcDriftThreshold=%s controlsEnabled=%t touWindow=%s "+
-		"broker=%s user=%s password=%s clientID=%s topicPrefix=%s haPrefix=%s health=%s log=%s/%s}",
+		"broker=%s user=%s password=%s clientID=%s topicPrefix=%s haPrefix=%s haObjectIDPrefix=%s "+
+		"health=%s log=%s/%s}",
 		c.Mode, c.InverterIP, serial, c.InverterPort, c.InverterSocketTimeout, c.SidecarURL,
 		c.PollInterval, c.PollMaxRetries, c.FailureThreshold,
 		c.RTCSyncEnabled, c.RTCDriftThreshold, c.ControlsEnabled, c.TOUWindow, c.MQTTBrokerURL,
 		c.MQTTUsername, password, c.MQTTClientID, c.MQTTTopicPrefix, c.HADiscoveryPrefix,
-		c.HealthAddr, c.LogLevel, c.LogFormat)
+		c.HAObjectIDPrefix, c.HealthAddr, c.LogLevel, c.LogFormat)
 }
 
 // LogValue implements slog.LogValuer so `logger.Info("...", "config", cfg)` emits
@@ -246,6 +265,7 @@ func (c *Config) LogValue() slog.Value {
 		slog.String("mqtt_client_id", c.MQTTClientID),
 		slog.String("mqtt_topic_prefix", c.MQTTTopicPrefix),
 		slog.String("ha_discovery_prefix", c.HADiscoveryPrefix),
+		slog.String("ha_object_id_prefix", c.HAObjectIDPrefix),
 		slog.String("health_addr", c.HealthAddr),
 		slog.String("log_level", c.LogLevel),
 		slog.String("log_format", c.LogFormat),

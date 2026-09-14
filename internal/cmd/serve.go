@@ -126,6 +126,7 @@ func runServe(ctx context.Context) error {
 		DiscoveryPrefix: cfg.HADiscoveryPrefix,
 		TopicPrefix:     cfg.MQTTTopicPrefix,
 		Serial:          cfg.InverterSerial,
+		ObjectIDPrefix:  cfg.HAObjectIDPrefix,
 		ControlsEnabled: cfg.ControlsEnabled,
 	}
 

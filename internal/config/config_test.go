@@ -55,6 +55,9 @@ func TestLoadDefaults(t *testing.T) {
 	if c.HADiscoveryPrefix != "homeassistant" {
 		t.Errorf("ha prefix = %q, want homeassistant", c.HADiscoveryPrefix)
 	}
+	if c.HAObjectIDPrefix != "solis_inverter" {
+		t.Errorf("ha object id prefix = %q, want solis_inverter", c.HAObjectIDPrefix)
+	}
 	if c.Mode != "live" {
 		t.Errorf("mode = %q, want live", c.Mode)
 	}
@@ -159,6 +162,28 @@ func TestTOUWindowInvalid(t *testing.T) {
 	setEnv(t, map[string]string{"TOU_WINDOW": "25:00-05:30"})
 	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "TOU_WINDOW") {
 		t.Fatalf("expected TOU_WINDOW validation error, got %v", err)
+	}
+}
+
+func TestHAObjectIDPrefixOverride(t *testing.T) {
+	setEnv(t, map[string]string{"HA_OBJECT_ID_PREFIX": "solis_2"})
+	c, err := Load()
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if c.HAObjectIDPrefix != "solis_2" {
+		t.Errorf("ha object id prefix = %q, want solis_2", c.HAObjectIDPrefix)
+	}
+}
+
+func TestHAObjectIDPrefixInvalid(t *testing.T) {
+	for _, bad := range []string{"Solis Inverter", "solis-inverter", "solis.inverter", "sensor/solis"} {
+		t.Run(bad, func(t *testing.T) {
+			setEnv(t, map[string]string{"HA_OBJECT_ID_PREFIX": bad})
+			if _, err := Load(); err == nil || !strings.Contains(err.Error(), "HA_OBJECT_ID_PREFIX") {
+				t.Fatalf("expected HA_OBJECT_ID_PREFIX validation error for %q, got %v", bad, err)
+			}
+		})
 	}
 }
 
