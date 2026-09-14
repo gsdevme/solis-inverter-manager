@@ -95,6 +95,9 @@ func (c Config) buildEntityPayload(e Entity, device map[string]any) map[string]a
 	if e.Category != "" {
 		p["entity_category"] = e.Category
 	}
+	if e.Precision > 0 {
+		p["suggested_display_precision"] = e.Precision
+	}
 	if e.Command {
 		p["command_topic"] = "~/" + e.Key + "/set"
 	}

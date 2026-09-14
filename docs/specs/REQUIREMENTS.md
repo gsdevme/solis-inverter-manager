@@ -67,7 +67,9 @@ payload shapes and the 38-entity table.
   magnitudes). `battery_charge_power` and `battery_discharge_power` are **derived
   convenience sensors** for Home Assistant (`max(battery_power, 0)` /
   `max(-battery_power, 0)`, computed in `BuildState` from that one signed value —
-  not an independent decode of the register halves).
+  not an independent decode of the register halves). Fractional-scale entities
+  publish `suggested_display_precision` matching the register scale (÷10 → 1,
+  ÷100 → 2) so HA renders `49.0 V`, not `49 V`.
   → `homeassistant/entities.go`, `homeassistant/state.go`
 - **REQ-HA-04** Availability + LWT: retained `offline` LWT on `<base>/availability`
   at QoS 1; `online` retained on connect; explicit `offline` retained + clean

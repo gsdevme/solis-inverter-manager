@@ -78,6 +78,10 @@ type Entity struct {
 	StateClass  string // "" if none
 	Unit        string // "" if none
 	Category    string // "diagnostic" or empty
+	// Precision is the suggested_display_precision HA renders the value with. It
+	// mirrors the register scale (÷10 → 1, ÷100 → 2) so a whole-number reading
+	// keeps its trailing zero (49.0 V, not 49 V). 0 omits the key.
+	Precision int
 	// InvertBool, for binary_sensors, emits ON when the JSON value is falsy.
 	// Unused by the current Solis catalogue; kept for parity with the shape.
 	InvertBool bool
@@ -112,8 +116,8 @@ type Entity struct {
 func Entities() []Entity {
 	return []Entity{
 		// Battery.
-		{Component: Sensor, Key: "battery_voltage", Name: "Battery voltage", DeviceClass: "voltage", StateClass: "measurement", Unit: "V"},
-		{Component: Sensor, Key: "battery_current", Name: "Battery current", DeviceClass: "current", StateClass: "measurement", Unit: "A"},
+		{Component: Sensor, Key: "battery_voltage", Name: "Battery voltage", DeviceClass: "voltage", StateClass: "measurement", Unit: "V", Precision: 1},
+		{Component: Sensor, Key: "battery_current", Name: "Battery current", DeviceClass: "current", StateClass: "measurement", Unit: "A", Precision: 1},
 		{Component: Sensor, Key: "battery_power", Name: "Battery power", DeviceClass: "power", StateClass: "measurement", Unit: "W"},
 		// Unsigned halves of the signed battery_power above, derived in
 		// BuildState so Home Assistant's Riemann-sum integrations can meter the
@@ -123,36 +127,36 @@ func Entities() []Entity {
 		{Component: BinarySensor, Key: "battery_charging", Name: "Battery charging", DeviceClass: "battery_charging"},
 		{Component: Sensor, Key: "battery_soc", Name: "Battery SOC", DeviceClass: "battery", StateClass: "measurement", Unit: "%"},
 		{Component: Sensor, Key: "battery_soh", Name: "Battery SOH", DeviceClass: "battery", StateClass: "measurement", Unit: "%", Category: "diagnostic"},
-		{Component: Sensor, Key: "bms_voltage", Name: "BMS voltage", DeviceClass: "voltage", StateClass: "measurement", Unit: "V", Category: "diagnostic"},
-		{Component: Sensor, Key: "bms_current", Name: "BMS current", DeviceClass: "current", StateClass: "measurement", Unit: "A", Category: "diagnostic"},
+		{Component: Sensor, Key: "bms_voltage", Name: "BMS voltage", DeviceClass: "voltage", StateClass: "measurement", Unit: "V", Category: "diagnostic", Precision: 2},
+		{Component: Sensor, Key: "bms_current", Name: "BMS current", DeviceClass: "current", StateClass: "measurement", Unit: "A", Category: "diagnostic", Precision: 1},
 
 		// PV.
-		{Component: Sensor, Key: "pv1_voltage", Name: "PV1 voltage", DeviceClass: "voltage", StateClass: "measurement", Unit: "V"},
-		{Component: Sensor, Key: "pv1_current", Name: "PV1 current", DeviceClass: "current", StateClass: "measurement", Unit: "A"},
-		{Component: Sensor, Key: "pv2_voltage", Name: "PV2 voltage", DeviceClass: "voltage", StateClass: "measurement", Unit: "V"},
-		{Component: Sensor, Key: "pv2_current", Name: "PV2 current", DeviceClass: "current", StateClass: "measurement", Unit: "A"},
+		{Component: Sensor, Key: "pv1_voltage", Name: "PV1 voltage", DeviceClass: "voltage", StateClass: "measurement", Unit: "V", Precision: 1},
+		{Component: Sensor, Key: "pv1_current", Name: "PV1 current", DeviceClass: "current", StateClass: "measurement", Unit: "A", Precision: 1},
+		{Component: Sensor, Key: "pv2_voltage", Name: "PV2 voltage", DeviceClass: "voltage", StateClass: "measurement", Unit: "V", Precision: 1},
+		{Component: Sensor, Key: "pv2_current", Name: "PV2 current", DeviceClass: "current", StateClass: "measurement", Unit: "A", Precision: 1},
 		{Component: Sensor, Key: "pv_total_power", Name: "PV total power", DeviceClass: "power", StateClass: "measurement", Unit: "W"},
 
 		// Grid.
 		{Component: Sensor, Key: "grid_power", Name: "Grid power", DeviceClass: "power", StateClass: "measurement", Unit: "W"},
 		{Component: Sensor, Key: "grid_total_import", Name: "Grid total import", DeviceClass: "energy", StateClass: "total_increasing", Unit: "kWh"},
-		{Component: Sensor, Key: "grid_import_today", Name: "Grid import today", DeviceClass: "energy", StateClass: "total", Unit: "kWh"},
+		{Component: Sensor, Key: "grid_import_today", Name: "Grid import today", DeviceClass: "energy", StateClass: "total", Unit: "kWh", Precision: 1},
 		{Component: Sensor, Key: "grid_total_export", Name: "Grid total export", DeviceClass: "energy", StateClass: "total_increasing", Unit: "kWh"},
-		{Component: Sensor, Key: "grid_export_today", Name: "Grid export today", DeviceClass: "energy", StateClass: "total", Unit: "kWh"},
+		{Component: Sensor, Key: "grid_export_today", Name: "Grid export today", DeviceClass: "energy", StateClass: "total", Unit: "kWh", Precision: 1},
 
 		// AC.
 		{Component: Sensor, Key: "ac_active_power", Name: "AC active power", DeviceClass: "power", StateClass: "measurement", Unit: "W"},
-		{Component: Sensor, Key: "inverter_temperature", Name: "Inverter temperature", DeviceClass: "temperature", StateClass: "measurement", Unit: "°C"},
-		{Component: Sensor, Key: "grid_frequency", Name: "Grid frequency", DeviceClass: "frequency", StateClass: "measurement", Unit: "Hz"},
+		{Component: Sensor, Key: "inverter_temperature", Name: "Inverter temperature", DeviceClass: "temperature", StateClass: "measurement", Unit: "°C", Precision: 1},
+		{Component: Sensor, Key: "grid_frequency", Name: "Grid frequency", DeviceClass: "frequency", StateClass: "measurement", Unit: "Hz", Precision: 2},
 		{Component: Sensor, Key: "house_load", Name: "House load", DeviceClass: "power", StateClass: "measurement", Unit: "W"},
 
 		// Energy.
-		{Component: Sensor, Key: "generation_today", Name: "Generation today", DeviceClass: "energy", StateClass: "total", Unit: "kWh"},
-		{Component: Sensor, Key: "generation_yesterday", Name: "Generation yesterday", DeviceClass: "energy", Unit: "kWh", Category: "diagnostic"},
+		{Component: Sensor, Key: "generation_today", Name: "Generation today", DeviceClass: "energy", StateClass: "total", Unit: "kWh", Precision: 1},
+		{Component: Sensor, Key: "generation_yesterday", Name: "Generation yesterday", DeviceClass: "energy", Unit: "kWh", Category: "diagnostic", Precision: 1},
 		{Component: Sensor, Key: "battery_total_charge", Name: "Battery total charge", DeviceClass: "energy", StateClass: "total_increasing", Unit: "kWh"},
-		{Component: Sensor, Key: "battery_charge_today", Name: "Battery charge today", DeviceClass: "energy", StateClass: "total", Unit: "kWh"},
+		{Component: Sensor, Key: "battery_charge_today", Name: "Battery charge today", DeviceClass: "energy", StateClass: "total", Unit: "kWh", Precision: 1},
 		{Component: Sensor, Key: "battery_total_discharge", Name: "Battery total discharge", DeviceClass: "energy", StateClass: "total_increasing", Unit: "kWh"},
-		{Component: Sensor, Key: "battery_discharge_today", Name: "Battery discharge today", DeviceClass: "energy", StateClass: "total", Unit: "kWh"},
+		{Component: Sensor, Key: "battery_discharge_today", Name: "Battery discharge today", DeviceClass: "energy", StateClass: "total", Unit: "kWh", Precision: 1},
 
 		// System.
 		{Component: Sensor, Key: "status", Name: "Status", Category: "diagnostic"},

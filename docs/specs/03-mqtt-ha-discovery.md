@@ -94,7 +94,7 @@ Keys present in every discovery payload (`buildEntityPayload`):
 
 Emitted only when non-empty for the entity: `device_class`, `state_class`,
 `unit_of_measurement` (from `Unit`), `entity_category` (from `Category`,
-`diagnostic`).
+`diagnostic`), `suggested_display_precision` (from `Precision`, see below).
 
 `value_template`:
 - sensor: `{{ value_json.<key> }}`
@@ -178,48 +178,54 @@ in the same catalogue are tabled under *Control entities* below. Blank cells mea
 the field is empty in the code and the key is therefore omitted from that
 entity's discovery payload.
 
-| # | Key | Component | device_class | state_class | unit | category |
-| --- | --- | --- | --- | --- | --- | --- |
-| 1 | `battery_voltage` | sensor | voltage | measurement | V | |
-| 2 | `battery_current` | sensor | current | measurement | A | |
-| 3 | `battery_power` | sensor | power | measurement | W | |
-| 4 | `battery_charge_power` | sensor | power | measurement | W | |
-| 5 | `battery_discharge_power` | sensor | power | measurement | W | |
-| 6 | `battery_charging` | binary_sensor | battery_charging | | | |
-| 7 | `battery_soc` | sensor | battery | measurement | % | |
-| 8 | `battery_soh` | sensor | battery | measurement | % | diagnostic |
-| 9 | `bms_voltage` | sensor | voltage | measurement | V | diagnostic |
-| 10 | `bms_current` | sensor | current | measurement | A | diagnostic |
-| 11 | `pv1_voltage` | sensor | voltage | measurement | V | |
-| 12 | `pv1_current` | sensor | current | measurement | A | |
-| 13 | `pv2_voltage` | sensor | voltage | measurement | V | |
-| 14 | `pv2_current` | sensor | current | measurement | A | |
-| 15 | `pv_total_power` | sensor | power | measurement | W | |
-| 16 | `grid_power` | sensor | power | measurement | W | |
-| 17 | `grid_total_import` | sensor | energy | total_increasing | kWh | |
-| 18 | `grid_import_today` | sensor | energy | total | kWh | |
-| 19 | `grid_total_export` | sensor | energy | total_increasing | kWh | |
-| 20 | `grid_export_today` | sensor | energy | total | kWh | |
-| 21 | `ac_active_power` | sensor | power | measurement | W | |
-| 22 | `inverter_temperature` | sensor | temperature | measurement | °C | |
-| 23 | `grid_frequency` | sensor | frequency | measurement | Hz | |
-| 24 | `house_load` | sensor | power | measurement | W | |
-| 25 | `generation_today` | sensor | energy | total | kWh | |
-| 26 | `generation_yesterday` | sensor | energy | | kWh | diagnostic |
-| 27 | `battery_total_charge` | sensor | energy | total_increasing | kWh | |
-| 28 | `battery_charge_today` | sensor | energy | total | kWh | |
-| 29 | `battery_total_discharge` | sensor | energy | total_increasing | kWh | |
-| 30 | `battery_discharge_today` | sensor | energy | total | kWh | |
-| 31 | `status` | sensor | | | | diagnostic |
-| 32 | `operating_status` | sensor | | | | diagnostic |
-| 33 | `work_mode` | sensor | | | | diagnostic |
-| 34 | `rtc` | sensor | timestamp | | | diagnostic |
-| 35 | `rtc_drift` | sensor | duration | | s | diagnostic |
-| 36 | `tou_window` | sensor | | | | |
-| 37 | `boost` | sensor | | | | |
-| 38 | `boost_ends_at` | sensor | timestamp | | | |
+| # | Key | Component | device_class | state_class | unit | category | precision |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 1 | `battery_voltage` | sensor | voltage | measurement | V | | 1 |
+| 2 | `battery_current` | sensor | current | measurement | A | | 1 |
+| 3 | `battery_power` | sensor | power | measurement | W | | |
+| 4 | `battery_charge_power` | sensor | power | measurement | W | | |
+| 5 | `battery_discharge_power` | sensor | power | measurement | W | | |
+| 6 | `battery_charging` | binary_sensor | battery_charging | | | | |
+| 7 | `battery_soc` | sensor | battery | measurement | % | | |
+| 8 | `battery_soh` | sensor | battery | measurement | % | diagnostic | |
+| 9 | `bms_voltage` | sensor | voltage | measurement | V | diagnostic | 2 |
+| 10 | `bms_current` | sensor | current | measurement | A | diagnostic | 1 |
+| 11 | `pv1_voltage` | sensor | voltage | measurement | V | | 1 |
+| 12 | `pv1_current` | sensor | current | measurement | A | | 1 |
+| 13 | `pv2_voltage` | sensor | voltage | measurement | V | | 1 |
+| 14 | `pv2_current` | sensor | current | measurement | A | | 1 |
+| 15 | `pv_total_power` | sensor | power | measurement | W | | |
+| 16 | `grid_power` | sensor | power | measurement | W | | |
+| 17 | `grid_total_import` | sensor | energy | total_increasing | kWh | | |
+| 18 | `grid_import_today` | sensor | energy | total | kWh | | 1 |
+| 19 | `grid_total_export` | sensor | energy | total_increasing | kWh | | |
+| 20 | `grid_export_today` | sensor | energy | total | kWh | | 1 |
+| 21 | `ac_active_power` | sensor | power | measurement | W | | |
+| 22 | `inverter_temperature` | sensor | temperature | measurement | °C | | 1 |
+| 23 | `grid_frequency` | sensor | frequency | measurement | Hz | | 2 |
+| 24 | `house_load` | sensor | power | measurement | W | | |
+| 25 | `generation_today` | sensor | energy | total | kWh | | 1 |
+| 26 | `generation_yesterday` | sensor | energy | | kWh | diagnostic | 1 |
+| 27 | `battery_total_charge` | sensor | energy | total_increasing | kWh | | |
+| 28 | `battery_charge_today` | sensor | energy | total | kWh | | 1 |
+| 29 | `battery_total_discharge` | sensor | energy | total_increasing | kWh | | |
+| 30 | `battery_discharge_today` | sensor | energy | total | kWh | | 1 |
+| 31 | `status` | sensor | | | | diagnostic | |
+| 32 | `operating_status` | sensor | | | | diagnostic | |
+| 33 | `work_mode` | sensor | | | | diagnostic | |
+| 34 | `rtc` | sensor | timestamp | | | diagnostic | |
+| 35 | `rtc_drift` | sensor | duration | | s | diagnostic | |
+| 36 | `tou_window` | sensor | | | | | |
+| 37 | `boost` | sensor | | | | | |
+| 38 | `boost_ends_at` | sensor | timestamp | | | | |
 
 Notes:
+- **`precision` follows the register scale.** `suggested_display_precision` is
+  1 for ÷10 registers (voltages, currents, temperature, the daily kWh counters)
+  and 2 for ÷100 registers (`bms_voltage`, `grid_frequency`), so Home Assistant
+  keeps the trailing zero on a whole-number reading (`49.0 V`, not `49 V`) —
+  the JSON state drops it (`49`) because Go encodes `49.0` as `49`. Integer-scale
+  entities (W, %, lifetime kWh) carry no precision key.
 - **`work_mode` is named "Energy storage mode"** — the Solis app's own term for
   the `43110` mode — and reports `Self Use`; the key is unchanged.
 - **`tou_window`, `boost`, and `boost_ends_at` are primary entities** (no
