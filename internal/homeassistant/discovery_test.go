@@ -459,3 +459,40 @@ func TestDiscoveryWorkModeRenamed(t *testing.T) {
 		t.Errorf("work_mode entity_category = %v", p["entity_category"])
 	}
 }
+
+// TestDiscoverySuggestedDisplayPrecision pins the display precision to the
+// register scale: ÷10 registers publish 1, ÷100 registers publish 2, so HA keeps
+// the trailing zero (49.0 V, not 49 V). Integer-scale entities carry none.
+func TestDiscoverySuggestedDisplayPrecision(t *testing.T) {
+	byTopic := mustBuildDiscovery(t)
+	want := map[string]float64{
+		"battery_voltage":         1,
+		"battery_current":         1,
+		"bms_voltage":             2,
+		"bms_current":             1,
+		"pv1_voltage":             1,
+		"pv1_current":             1,
+		"pv2_voltage":             1,
+		"pv2_current":             1,
+		"grid_import_today":       1,
+		"grid_export_today":       1,
+		"inverter_temperature":    1,
+		"grid_frequency":          2,
+		"generation_today":        1,
+		"generation_yesterday":    1,
+		"battery_charge_today":    1,
+		"battery_discharge_today": 1,
+	}
+	for key, prec := range want {
+		p := byTopic["homeassistant/sensor/1234567890_"+key+"/config"]
+		if got := p["suggested_display_precision"]; got != prec {
+			t.Errorf("%s suggested_display_precision = %v, want %v", key, got, prec)
+		}
+	}
+	for _, key := range []string{"battery_power", "battery_soc", "grid_total_import", "house_load", "status"} {
+		p := byTopic["homeassistant/sensor/1234567890_"+key+"/config"]
+		if got, present := p["suggested_display_precision"]; present {
+			t.Errorf("%s should carry no suggested_display_precision, got %v", key, got)
+		}
+	}
+}
