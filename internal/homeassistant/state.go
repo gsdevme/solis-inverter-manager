@@ -15,14 +15,19 @@ import (
 // value_template relies on (value_json.<Key>). No entity may exist without a
 // field here, and no field here without an entity.
 type State struct {
-	BatteryVoltage  float64 `json:"battery_voltage"`
-	BatteryCurrent  float64 `json:"battery_current"`
-	BatteryPower    float64 `json:"battery_power"`
-	BatteryCharging bool    `json:"battery_charging"`
-	BatterySOC      float64 `json:"battery_soc"`
-	BatterySOH      float64 `json:"battery_soh"`
-	BMSVoltage      float64 `json:"bms_voltage"`
-	BMSCurrent      float64 `json:"bms_current"`
+	BatteryVoltage float64 `json:"battery_voltage"`
+	BatteryCurrent float64 `json:"battery_current"`
+	BatteryPower   float64 `json:"battery_power"`
+	// BatteryChargePower and BatteryDischargePower are the unsigned halves of
+	// BatteryPower, for Home Assistant integrations that meter each direction
+	// separately. Exactly one is non-zero at a time; see splitBatteryPower.
+	BatteryChargePower    float64 `json:"battery_charge_power"`
+	BatteryDischargePower float64 `json:"battery_discharge_power"`
+	BatteryCharging       bool    `json:"battery_charging"`
+	BatterySOC            float64 `json:"battery_soc"`
+	BatterySOH            float64 `json:"battery_soh"`
+	BMSVoltage            float64 `json:"bms_voltage"`
+	BMSCurrent            float64 `json:"bms_current"`
 
 	PV1Voltage   float64 `json:"pv1_voltage"`
 	PV1Current   float64 `json:"pv1_current"`
@@ -95,15 +100,18 @@ func (c Config) BuildState(t inverter.Telemetry, drift time.Duration, sp Setpoin
 	if sp.OptimalIncome {
 		optimalIncome = "Run"
 	}
+	chargeW, dischargeW := splitBatteryPower(t.Battery.PowerW)
 	st := State{
-		BatteryVoltage:  t.Battery.VoltageV,
-		BatteryCurrent:  t.Battery.CurrentA,
-		BatteryPower:    t.Battery.PowerW,
-		BatteryCharging: t.Battery.Charging,
-		BatterySOC:      t.Battery.SOCPercent,
-		BatterySOH:      t.Battery.SOHPercent,
-		BMSVoltage:      t.Battery.BMSVoltageV,
-		BMSCurrent:      t.Battery.BMSCurrentA,
+		BatteryVoltage:        t.Battery.VoltageV,
+		BatteryCurrent:        t.Battery.CurrentA,
+		BatteryPower:          t.Battery.PowerW,
+		BatteryChargePower:    chargeW,
+		BatteryDischargePower: dischargeW,
+		BatteryCharging:       t.Battery.Charging,
+		BatterySOC:            t.Battery.SOCPercent,
+		BatterySOH:            t.Battery.SOHPercent,
+		BMSVoltage:            t.Battery.BMSVoltageV,
+		BMSCurrent:            t.Battery.BMSCurrentA,
 
 		PV1Voltage:   t.PV.PV1VoltageV,
 		PV1Current:   t.PV.PV1CurrentA,
@@ -149,6 +157,16 @@ func (c Config) BuildState(t inverter.Telemetry, drift time.Duration, sp Setpoin
 		return Message{}, fmt.Errorf("marshal state: %w", err)
 	}
 	return Message{Topic: c.StateTopic(), Payload: body}, nil
+}
+
+// splitBatteryPower splits the correctly-decoded signed battery power (positive
+// charging, negative discharging) into the two unsigned sensors Home Assistant's
+// Riemann-sum integrations consume, so a template does not have to. This is a
+// presentation split of one decoded S32, not a second reading: the signed
+// battery_power sensor remains the source of truth, and the legacy app's
+// independent-halves decode bug is not reintroduced.
+func splitBatteryPower(powerW float64) (chargeW, dischargeW float64) {
+	return max(powerW, 0), max(-powerW, 0)
 }
 
 // touWindowLabel renders the Time-of-Use charge window as "23:31–05:29", or nil

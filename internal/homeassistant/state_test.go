@@ -43,11 +43,11 @@ func TestStateTagsEqualEntityKeys(t *testing.T) {
 		}
 		keys[e.Key] = true
 	}
-	if len(keys) != 40 {
-		t.Errorf("got %d stateful entity keys, want 40", len(keys))
+	if len(keys) != 42 {
+		t.Errorf("got %d stateful entity keys, want 42", len(keys))
 	}
-	if len(tags) != 40 {
-		t.Errorf("got %d state json tags, want 40", len(tags))
+	if len(tags) != 42 {
+		t.Errorf("got %d state json tags, want 42", len(tags))
 	}
 	for k := range keys {
 		if !tags[k] {
@@ -147,6 +147,44 @@ func TestBuildStateTopicAndValues(t *testing.T) {
 	// rtc_sync (button) must NOT appear in the state document.
 	if _, present := got["rtc_sync"]; present {
 		t.Errorf("state should not carry rtc_sync, got %v", got["rtc_sync"])
+	}
+}
+
+// TestBuildStateDerivedBatteryPower covers the two unsigned convenience sensors
+// split out of the signed battery_power: exactly one is non-zero at a time, and
+// the signed sensor is untouched.
+func TestBuildStateDerivedBatteryPower(t *testing.T) {
+	cases := []struct {
+		name                      string
+		powerW                    float64
+		wantCharge, wantDischarge float64
+	}{
+		{"discharging", -174, 0, 174},
+		{"charging", 2100, 2100, 0},
+		{"idle", 0, 0, 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			tel := sampleTelemetry()
+			tel.Battery.PowerW = tc.powerW
+			msg, err := testConfig().BuildState(tel, 0, Setpoints{})
+			if err != nil {
+				t.Fatalf("BuildState: %v", err)
+			}
+			var got map[string]any
+			if err := json.Unmarshal(msg.Payload, &got); err != nil {
+				t.Fatalf("bad payload: %v", err)
+			}
+			if got["battery_power"] != tc.powerW {
+				t.Errorf("battery_power = %v, want %v", got["battery_power"], tc.powerW)
+			}
+			if got["battery_charge_power"] != tc.wantCharge {
+				t.Errorf("battery_charge_power = %v, want %v", got["battery_charge_power"], tc.wantCharge)
+			}
+			if got["battery_discharge_power"] != tc.wantDischarge {
+				t.Errorf("battery_discharge_power = %v, want %v", got["battery_discharge_power"], tc.wantDischarge)
+			}
+		})
 	}
 }
 

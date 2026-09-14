@@ -5,7 +5,8 @@ import "testing"
 // wantKeys is the full, ordered catalogue every other test and the state DTO must
 // agree with. It is the single place the expected key set is written down.
 var wantKeys = []string{
-	"battery_voltage", "battery_current", "battery_power", "battery_charging",
+	"battery_voltage", "battery_current", "battery_power",
+	"battery_charge_power", "battery_discharge_power", "battery_charging",
 	"battery_soc", "battery_soh", "bms_voltage", "bms_current",
 	"pv1_voltage", "pv1_current", "pv2_voltage", "pv2_current", "pv_total_power",
 	"grid_power", "grid_total_import", "grid_import_today", "grid_total_export", "grid_export_today",

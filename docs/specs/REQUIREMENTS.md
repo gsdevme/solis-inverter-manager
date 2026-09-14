@@ -42,7 +42,7 @@ The thin Python transport sidecar (Phase 2, #19). See
 
 Phase 4 (#20/#21) is **read-only** discovery + state + availability. See
 [`03-mqtt-ha-discovery.md`](03-mqtt-ha-discovery.md) for the full topic scheme,
-payload shapes and the 36-entity table.
+payload shapes and the 38-entity table.
 
 - **REQ-HA-01** Discovery: one **retained**, QoS-1 config per entity at
   `<HA_DISCOVERY_PREFIX>/<component>/<serial>_<key>/config` (object_id form);
@@ -54,15 +54,19 @@ payload shapes and the 36-entity table.
 - **REQ-HA-02** State: a single **retained**, QoS-1 JSON document at `<base>/state`;
   every entity reads it via `value_template {{ value_json.<key> }}` (binary_sensor
   via `{{ 'ON' if value_json.<key> else 'OFF' }}`); the state DTO's json tags are
-  the 36 read-only entity keys plus the four control-readback fields
+  the 38 read-only entity keys plus the four control-readback fields
   (`set_charge_current`, `set_discharge_current`, `optimal_income`,
-  `boost_select`) — 40 tags.
+  `boost_select`) — 42 tags.
   `rtc` is RFC3339; `rtc_drift` is seconds.
   → `homeassistant/state.go`, `homeassistant/entities.go`
 - **REQ-HA-03** Entity classes per the `03` table; **daily** energy counters use
   `state_class: total`, **lifetime** counters `total_increasing`; signed
   battery/grid power is one signed entity (not split), with a derived
-  `battery_charging` binary_sensor. → `homeassistant/entities.go`
+  `battery_charging` binary_sensor. `battery_charge_power` and
+  `battery_discharge_power` are **derived convenience sensors** for Home Assistant
+  (`max(battery_power, 0)` / `max(-battery_power, 0)`, computed in `BuildState`
+  from the one correctly-decoded signed S32 — not an independent decode of the
+  register halves). → `homeassistant/entities.go`, `homeassistant/state.go`
 - **REQ-HA-04** Availability + LWT: retained `offline` LWT on `<base>/availability`
   at QoS 1; `online` retained on connect; explicit `offline` retained + clean
   disconnect on graceful shutdown (clean disconnect suppresses the Will).

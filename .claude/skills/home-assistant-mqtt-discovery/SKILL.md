@@ -117,8 +117,11 @@ equally valid; don't mix half-and-half within a payload confusingly.
 - Forgetting `retain=true` → entities vanish after a broker restart.
 - `total_increasing` on a **daily** counter that resets at midnight → false "reset"
   energy spikes; use `total`.
-- Splitting a signed S32 (grid/battery power) into two entities → the legacy app's bug;
-  publish one signed value.
+- Splitting a signed S32 (grid/battery power) into **two independently decoded** entities
+  → the legacy app's bug; decode once and publish one signed value. Deriving unsigned
+  `battery_charge_power` / `battery_discharge_power` as `max(±battery_power, 0)` *from*
+  that one signed value is not the same thing and is fine — HA's Riemann-sum integration
+  helper needs unsigned inputs — as long as the signed sensor stays the source of truth.
 - Reusing a `unique_id` across entities → HA rejects/merges them.
 - Not setting `availability_topic` on entities → they never show "unavailable".
 - Changing a discovery topic's `<object_id>` orphans the old retained config (publish

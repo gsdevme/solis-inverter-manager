@@ -115,6 +115,11 @@ func Entities() []Entity {
 		{Component: Sensor, Key: "battery_voltage", Name: "Battery voltage", DeviceClass: "voltage", StateClass: "measurement", Unit: "V"},
 		{Component: Sensor, Key: "battery_current", Name: "Battery current", DeviceClass: "current", StateClass: "measurement", Unit: "A"},
 		{Component: Sensor, Key: "battery_power", Name: "Battery power", DeviceClass: "power", StateClass: "measurement", Unit: "W"},
+		// Unsigned halves of the signed battery_power above, derived in
+		// BuildState so Home Assistant's Riemann-sum integrations can meter the
+		// two directions separately. Not an independent decode.
+		{Component: Sensor, Key: "battery_charge_power", Name: "Battery charge power", DeviceClass: "power", StateClass: "measurement", Unit: "W"},
+		{Component: Sensor, Key: "battery_discharge_power", Name: "Battery discharge power", DeviceClass: "power", StateClass: "measurement", Unit: "W"},
 		{Component: BinarySensor, Key: "battery_charging", Name: "Battery charging", DeviceClass: "battery_charging"},
 		{Component: Sensor, Key: "battery_soc", Name: "Battery SOC", DeviceClass: "battery", StateClass: "measurement", Unit: "%"},
 		{Component: Sensor, Key: "battery_soh", Name: "Battery SOH", DeviceClass: "battery", StateClass: "measurement", Unit: "%", Category: "diagnostic"},

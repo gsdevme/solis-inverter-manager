@@ -261,8 +261,8 @@ func TestDiscoveryBareDiagnosticSensors(t *testing.T) {
 // message carries a command_topic.
 func TestDiscoveryControlsDisabledByDefault(t *testing.T) {
 	byTopic := mustBuildDiscoveryFor(t, testConfig())
-	if len(byTopic) != 36 {
-		t.Fatalf("got %d discovery messages, want 36", len(byTopic))
+	if len(byTopic) != 38 {
+		t.Fatalf("got %d discovery messages, want 38", len(byTopic))
 	}
 	for topic, p := range byTopic {
 		if _, present := p["command_topic"]; present {
@@ -285,8 +285,8 @@ func TestDiscoveryControlsEnabled(t *testing.T) {
 	c := testConfig()
 	c.ControlsEnabled = true
 	byTopic := mustBuildDiscoveryFor(t, c)
-	if len(byTopic) != 41 {
-		t.Fatalf("got %d discovery messages, want 41", len(byTopic))
+	if len(byTopic) != 43 {
+		t.Fatalf("got %d discovery messages, want 43", len(byTopic))
 	}
 
 	num := byTopic["homeassistant/number/1234567890_set_charge_current/config"]

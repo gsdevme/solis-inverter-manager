@@ -107,6 +107,119 @@ comfortably covers that plus SIGTERM propagation to both containers.
   pending owner approval** — the header comment documents exactly what to flip to
   publish to ghcr.
 
+## Migrating from the legacy Python publisher
+
+The legacy `cli/publish.py` monolith (removed in Phase 3) published a different,
+smaller entity set under a different device. Nothing is shared with the Go
+manager — different discovery topics, different device identifier, different
+state topics — so the two never collide, but the legacy entities do **not** clean
+themselves up: their discovery configs are retained, so Home Assistant keeps
+re-creating them from the broker forever after the old publisher is gone.
+
+### 1. Entity id mapping
+
+With the default `HA_OBJECT_ID_PREFIX=solis_inverter`:
+
+| Legacy entity | New entity |
+| --- | --- |
+| `sensor.solis_inverter_battery` | `sensor.solis_inverter_battery_soc` |
+| `sensor.solis_inverter_pv` | `sensor.solis_inverter_pv_total_power` |
+| `sensor.solis_inverter_power_to_battery` | `sensor.solis_inverter_battery_charge_power` |
+| `sensor.solis_inverter_power_from_battery` | `sensor.solis_inverter_battery_discharge_power` |
+| `sensor.solis_inverter_charge_amps` | `number.solis_inverter_set_charge_current` |
+| `sensor.solis_inverter_discharge_amps` | `number.solis_inverter_set_discharge_current` |
+| `binary_sensor.solis_inverter_optimal_income` + the `switch.grid_charge_switch` YAML template on top of it | `select.solis_inverter_optimal_income` (`Run` / `Stop`) |
+| `binary_sensor.solis_inverter_poller` | no entity — the availability topic `solis/<serial>/availability` (`online`/`offline`) drives every entity's availability instead |
+
+Note the **domain changes** for the two amp setpoints (`sensor` → `number`) and
+for optimal income (`binary_sensor`/`switch` → `select`): anything referencing
+them by entity id — automations, scripts, template sensors, dashboards — must be
+updated, and a `switch.turn_on` service call becomes
+`select.select_option` with `Run` or `Stop`.
+
+Command topics move too:
+
+| Legacy command topic | New command topic |
+| --- | --- |
+| `solar_inverter_manager/set_charge` | `solis/<serial>/set_charge_current/set` |
+| `solar_inverter_manager/set_discharge` | `solis/<serial>/set_discharge_current/set` |
+| `solar_inverter_manager/set_optimal_income` (`1`/`true`) | `solis/<serial>/optimal_income/set` (`Run`/`Stop`) |
+
+`<serial>` is `INVERTER_SERIAL`, the datalogger serial, and `solis` is
+`MQTT_TOPIC_PREFIX`. The new controls are native discovery entities, so nothing
+should need to publish to these topics by hand.
+
+### 2. Clear the legacy retained topics — BEFORE starting the new manager
+
+Do this while **both** publishers are stopped. Publishing an empty retained
+payload (`-r -n`) to a discovery topic is how Home Assistant is told to delete
+the entity; the same empty-retained trick clears the orphaned state/attribute
+topics so they stop showing up in MQTT explorers.
+
+The legacy publisher used `ha_mqtt_discoverable`, which slugifies the device name
+to `Solis-Inverter` and each entity name to `Solis-Inverter-<Name>`, putting
+discovery under `homeassistant/` and state under `hmd/`. Eight entities, six
+`sensor` and two `binary_sensor`:
+
+```sh
+BROKER=mqtt.example        # -h; add -u/-P if the broker needs auth
+
+for name in Power-From-Battery Power-To-Battery Battery Charge-Amps Discharge-Amps PV; do
+  mosquitto_pub -h "$BROKER" -r -n -t "homeassistant/sensor/Solis-Inverter/Solis-Inverter-$name/config"
+  mosquitto_pub -h "$BROKER" -r -n -t "hmd/sensor/Solis-Inverter/Solis-Inverter-$name/state"
+  mosquitto_pub -h "$BROKER" -r -n -t "hmd/sensor/Solis-Inverter/Solis-Inverter-$name/attributes"
+done
+
+for name in Poller optimal_income; do
+  mosquitto_pub -h "$BROKER" -r -n -t "homeassistant/binary_sensor/Solis-Inverter/Solis-Inverter-$name/config"
+  mosquitto_pub -h "$BROKER" -r -n -t "hmd/binary_sensor/Solis-Inverter/Solis-Inverter-$name/state"
+  mosquitto_pub -h "$BROKER" -r -n -t "hmd/binary_sensor/Solis-Inverter/Solis-Inverter-$name/attributes"
+done
+```
+
+Also retire the three legacy command topics if anything ever published to them
+retained:
+
+```sh
+for t in set_charge set_discharge set_optimal_income; do
+  mosquitto_pub -h "$BROKER" -r -n -t "solar_inverter_manager/$t"
+done
+```
+
+**The old device disappears on its own.** The legacy device identifier was
+`solis_inverter_<serial>`; the new one is `<serial>` (see *Device block* in
+[`03-mqtt-ha-discovery.md`](03-mqtt-ha-discovery.md)), so they are two distinct
+devices in the registry. Home Assistant removes a device once its last entity is
+gone, so clearing the eight discovery configs above is enough — do not delete the
+new device by hand while tidying up. Any legacy entity that survives (one Home
+Assistant had customised, or a stale registry row) can be deleted from
+**Settings → Devices & services → MQTT** once its retained config is cleared.
+
+Only then start the new manager; it publishes its own discovery, availability
+`online` and first state, and the new entities appear under the `Solis Inverter`
+device.
+
+### 3. Post-cutover UI checks
+
+- **Energy dashboard** (*Settings → Dashboards → Energy*): re-point the battery
+  in/out sources at the Riemann-sum integration sensors built on
+  `sensor.solis_inverter_battery_charge_power` /
+  `…_battery_discharge_power`, and the solar production source at the one built
+  on `sensor.solis_inverter_pv_total_power`. The dashboard silently keeps a
+  reference to a now-missing entity, so check it explicitly rather than assuming.
+- **Utility meters** (*Settings → Devices & services → Helpers*): each utility
+  meter and Riemann-sum helper carries its source entity id — update every one
+  that named a legacy id from the table above. A helper pointing at a deleted
+  entity reports `unavailable` rather than erroring, so it is easy to miss.
+- **`input_boolean.is_cheap_rate`**: confirm the automation windows that flip it
+  still match `TOU_WINDOW` (default `23:30-05:30`). The manager now asserts that
+  window into timed slots 1–2 on every poll (REQ-HA-17), so an automation on a
+  different schedule will disagree with the inverter — `sensor.solis_inverter_tou_window`
+  reports the window the inverter is actually running.
+- **Boost**: the legacy setup had no equivalent; `select.solis_inverter_boost_select`
+  plus `sensor.solis_inverter_boost` / `…_boost_ends_at` replace any manual
+  slot-3 fiddling.
+
 ## Reference manifests
 
 Example only — the canonical source is the GitOps/Helm chart in the infrastructure
