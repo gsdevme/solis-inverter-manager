@@ -293,6 +293,18 @@ health-driven readiness.
   without the warning. This removes the spurious first-poll
   `connection refused` / `poll failed` on every pod start. →
   `cmd/serve.go`, `sidecarclient.WaitUntilServing`
+- **REQ-LC-12** The status page (`GET /{$}`) shows the **last inverter values**: every
+  key of the flat state document (`REQ-HA-*`, `03-mqtt-ha-discovery.md`) as built on
+  the most recent poll or command refresh, sorted by key, with the reading's age;
+  "no readings yet" before the first successful read. Values are recorded in-process
+  (`RecordReading`) from the *same built document* the publisher sends — `cmd`'s
+  `statePublisher` builds it once and fans it out to Home Assistant and the page, so
+  there is no second build to drift and no MQTT subscription, and the page works
+  without a broker (`publisher.Discard`). When the setpoints in a reading were reused
+  from cache after a failed holding-register read, the page says so and dates them
+  from their last successful read. The page auto-refreshes at the poll interval,
+  whose 5 s floor `POLL_INTERVAL` validation (`REQ-SC-01`) already enforces; a zero
+  interval emits no refresh tag. → `internal/server`, `cmd/serve.go`, `cmd/state.go`
 - **REQ-LC-08** `cmd/main.go` reports errors to stderr and exits non-zero. →
   `cmd/main.go`
 

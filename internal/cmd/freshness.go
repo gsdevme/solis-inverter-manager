@@ -25,6 +25,11 @@ func (f *setpointFreshness) markFresh() { f.stale.Store(false) }
 // setpoints sub-read failed.
 func (f *setpointFreshness) markStale() { f.stale.Store(true) }
 
+// isStale reports whether the most recent read reused cached setpoints. The
+// schedule reconcile uses it to skip a cycle, and the status page to date the
+// setpoints it shows separately from the telemetry.
+func (f *setpointFreshness) isStale() bool { return f.stale.Load() }
+
 // gate wraps a reconciler so it acts only on slots the current cycle actually
 // read. readState reuses the cached setpoints when the setpoints sub-read fails,
 // so the slots a poll hands the reconcile can be a whole poll interval old;
@@ -46,7 +51,7 @@ type gatedReconciler struct {
 // Reconcile skips the cycle when the setpoints behind slots were reused from
 // cache, and otherwise delegates unchanged.
 func (r gatedReconciler) Reconcile(ctx context.Context, slots inverter.TimedSlots) (bool, error) {
-	if r.fresh.stale.Load() {
+	if r.fresh.isStale() {
 		r.log.DebugContext(ctx, "skipping schedule reconcile: setpoints were reused from cache this poll")
 		return false, nil
 	}

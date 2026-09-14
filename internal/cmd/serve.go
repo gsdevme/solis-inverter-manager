@@ -39,13 +39,6 @@ func (f readerFunc) Read(ctx context.Context) (inverter.Telemetry, homeassistant
 	return f(ctx)
 }
 
-// publisherFunc adapts a closure to scheduler.StatePublisher.
-type publisherFunc func(context.Context, inverter.Telemetry, homeassistant.Setpoints) error
-
-func (f publisherFunc) PublishState(ctx context.Context, tel inverter.Telemetry, sp homeassistant.Setpoints) error {
-	return f(ctx, tel, sp)
-}
-
 // toHASetpoints maps the controls-package setpoints (read from the holding bank)
 // onto the homeassistant DTO folded into the shared state document, keeping the
 // two packages decoupled at the serve seam. The boost's end instant is resolved
@@ -162,15 +155,18 @@ func runServe(ctx context.Context) error {
 		ControlsEnabled: cfg.ControlsEnabled,
 	}
 
-	// now is the single clock shared by the scheduler and the controls handler
-	// (RTC sync), so tests can inject one fake clock across both.
+	// now is the single clock shared by the scheduler, the controls handler (RTC
+	// sync) and the publisher (RTC drift), so tests can inject one fake clock
+	// across all three.
 	now := time.Now
 
-	// svcPtr holds the publisher once MQTT is connected. It is stored by the main
-	// goroutine after Connect and loaded by the reconnect hook, the scheduler's
-	// StatePublisher adapter and the command refresh, so the hand-off is
-	// synchronized through an atomic pointer (the transport goroutine may fire
-	// OnConnectionUp as soon as the connection comes up).
+	// svcPtr holds the publisher. Both modes store one — an MQTT-backed Service
+	// once Connect returns, or a Discard-backed Service when no broker is
+	// configured — so the publish step is identical either way. It is stored by the
+	// main goroutine and loaded by the reconnect hook, statePublisher and the
+	// command refresh, so the hand-off is synchronized through an atomic pointer
+	// (the transport goroutine may fire OnConnectionUp as soon as the connection
+	// comes up, which is the only window in which it is still nil).
 	var (
 		mc     *mqtt.Client
 		svcPtr atomic.Pointer[publisher.Service]
@@ -207,28 +203,15 @@ func runServe(ctx context.Context) error {
 		return tel, haSp, nil
 	}
 
-	// publishState is the scheduler's StatePublisher: it publishes the shared state
-	// document once MQTT is connected, and otherwise (mock, no broker) logs decoded
-	// telemetry so the pipeline stays observable without a broker.
-	publishState := func(ctx context.Context, tel inverter.Telemetry, haSp homeassistant.Setpoints) error {
-		svc := svcPtr.Load()
-		if svc == nil {
-			logger.Info("telemetry",
-				"time", tel.Time,
-				"battery_soc", tel.Battery.SOCPercent,
-				"battery_power_w", tel.Battery.PowerW,
-				"pv_power_w", tel.PV.TotalPowerW,
-				"grid_power_w", tel.Grid.PowerW,
-				"set_charge_current", haSp.SetChargeCurrent,
-				"set_discharge_current", haSp.SetDischargeCurrent,
-				"optimal_income", haSp.OptimalIncome,
-				"tou_window", touWindowAttr(haSp.Slots),
-				"boost", schedule.BoostOf(haSp.Slots).String(),
-				"boost_select", boostSelectAttr(haSp.Slots),
-			)
-			return nil
-		}
-		return svc.PublishState(ctx, tel, haSp)
+	// statePub fans every freshly read state out to Home Assistant and the status
+	// page; see state.go. Telemetry is logged only without a broker, where the log
+	// is the sole window onto the pipeline.
+	statePub := &statePublisher{
+		svc:          svcPtr.Load,
+		status:       status,
+		fresh:        &fresh,
+		logTelemetry: cfg.MQTTBrokerURL == "",
+		logger:       logger,
 	}
 
 	// rtcSyncer, commander and reconciler are the controls seams, left as nil
@@ -265,7 +248,7 @@ func runServe(ctx context.Context) error {
 			// very first OnConnectionUp (fired during Connect, before sched is built).
 			if sched != nil {
 				if tel, sp, have := sched.LastState(); have {
-					if err := svc.PublishState(ctx, tel, sp); err != nil {
+					if _, err := svc.PublishState(ctx, tel, sp); err != nil {
 						logger.Warn("republish state failed", "err", err)
 					}
 				}
@@ -291,7 +274,12 @@ func runServe(ctx context.Context) error {
 		if err != nil {
 			return fmt.Errorf("mqtt: %w", err)
 		}
-		svcPtr.Store(publisher.New(mc, haCfg))
+		svcPtr.Store(publisher.New(mc, haCfg, publisher.WithNow(now)))
+	} else {
+		// No broker: publish into Discard so the poll still builds one state
+		// document and the status page still gets it, with no branch in the
+		// publish step.
+		svcPtr.Store(publisher.New(publisher.Discard{}, haCfg, publisher.WithNow(now)))
 	}
 
 	// TOU_WINDOW is parsed once here and handed to the command handler. Config
@@ -311,21 +299,20 @@ func runServe(ctx context.Context) error {
 	// nothing to subscribe to and no handler is built — leaving rtcSyncer,
 	// commander and reconciler nil.
 	if cfg.ControlsEnabled {
-		// refresh re-reads telemetry+setpoints through the wrapper and republishes
-		// state after any command that touched the inverter, then updates the
+		// refresh re-reads telemetry+setpoints through the wrapper and fans the
+		// result out after any command that touched the inverter, then updates the
 		// scheduler cache so a reconnect in the window before the next poll
-		// republishes post-command values rather than stale ones. With no broker
-		// configured svcPtr is never stored and the publish is skipped.
+		// republishes post-command values rather than stale ones. It goes through
+		// the same statePublisher as a poll, so / shows the effect of a command
+		// without waiting for the next poll, in both modes.
 		refresh := func(ctx context.Context) {
 			tel, haSp, err := readState(ctx)
 			if err != nil {
 				logger.Warn("controls refresh: read failed", "err", err)
 				return
 			}
-			if svc := svcPtr.Load(); svc != nil {
-				if err := svc.PublishState(ctx, tel, haSp); err != nil {
-					logger.Warn("controls refresh: publish state failed", "err", err)
-				}
+			if err := statePub.PublishState(ctx, tel, haSp); err != nil {
+				logger.Warn("controls refresh: publish state failed", "err", err)
 			}
 			sched.RememberState(tel, haSp)
 		}
@@ -345,7 +332,7 @@ func runServe(ctx context.Context) error {
 		logger.Warn("ToU assertion is disabled because CONTROLS_ENABLED=false; it requires the write path", "tou_window", cfg.TOUWindow)
 	}
 
-	sched = scheduler.New(readerFunc(readState), publisherFunc(publishState), status, rtcSyncer, commander, reconciler, scheduler.Config{
+	sched = scheduler.New(readerFunc(readState), statePub, status, rtcSyncer, commander, reconciler, scheduler.Config{
 		PollInterval:      cfg.PollInterval,
 		MaxRetries:        cfg.PollMaxRetries,
 		RTCSyncEnabled:    cfg.RTCSyncEnabled,
