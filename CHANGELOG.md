@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.1.0](https://github.com/gsdevme/solis-inverter-manager/compare/v2.0.1...v2.1.0) (2026-09-14)
+
+
+### Features
+
+* **cmd:** wait for the sidecar before announcing and polling ([#32](https://github.com/gsdevme/solis-inverter-manager/issues/32)) ([179ee27](https://github.com/gsdevme/solis-inverter-manager/commit/179ee27bd8a28b91ca851bfa76bd3c6980e4bc8a))
+
 ## [2.0.1](https://github.com/gsdevme/solis-inverter-manager/compare/v2.0.0...v2.0.1) (2026-09-14)
 
 
