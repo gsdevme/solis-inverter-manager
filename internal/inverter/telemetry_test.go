@@ -132,3 +132,79 @@ func TestDecodeTelemetryMissingBlock(t *testing.T) {
 		t.Fatal("DecodeTelemetry with incomplete snapshot returned nil error")
 	}
 }
+
+// withRegs returns a copy of s with the given absolute addresses overwritten, so
+// a decode case can pose a register combination no fixture captured.
+func withRegs(t *testing.T, s Snapshot, regs map[int]uint16) Snapshot {
+	t.Helper()
+	out := make(Snapshot, len(s))
+	for i, b := range s {
+		out[i] = Block{Base: b.Base, Regs: append([]uint16(nil), b.Regs...)}
+	}
+	for addr, v := range regs {
+		placed := false
+		for _, b := range out {
+			if i, ok := b.index(addr); ok {
+				b.Regs[i] = v
+				placed = true
+				break
+			}
+		}
+		if !placed {
+			t.Fatalf("register %d not present in snapshot", addr)
+		}
+	}
+	return out
+}
+
+// TestDecodeTelemetryBatteryDirection pins the battery sign convention to the
+// 33135 direction flag. The live capture of 2026-09-14 (house load 448 W, PV
+// 189 W, direction = 1 = discharge) reported 33149·33150 as +381 W and 33134 as
+// +7.6 A, so the power and current registers are magnitudes on this firmware and
+// the decode must apply the sign itself — for a positive or a negative raw word.
+func TestDecodeTelemetryBatteryDirection(t *testing.T) {
+	base := loadFixture(t, "live-snapshot-comprehensive.json").snapshot()
+
+	cases := []struct {
+		name             string
+		direction        uint16
+		currentRaw       uint16
+		powerHi, powerLo uint16
+		wantCharging     bool
+		wantCurrentA     float64
+		wantPowerW       float64
+	}{
+		{
+			name: "charging", direction: 0, currentRaw: 155, powerHi: 0, powerLo: 802,
+			wantCharging: true, wantCurrentA: 15.5, wantPowerW: 802,
+		},
+		{
+			name: "discharging with a positive magnitude", direction: 1, currentRaw: 76, powerHi: 0, powerLo: 381,
+			wantCharging: false, wantCurrentA: -7.6, wantPowerW: -381,
+		},
+		{
+			name: "discharging with an already-negative raw", direction: 1, currentRaw: 0xFFB4, powerHi: 0xFFFF, powerLo: 0xFE83,
+			wantCharging: false, wantCurrentA: -7.6, wantPowerW: -381,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := withRegs(t, base, map[int]uint16{
+				RegBatteryDirection: tc.direction,
+				RegBatteryCurrent:   tc.currentRaw,
+				RegBatteryPower:     tc.powerHi,
+				RegBatteryPower + 1: tc.powerLo,
+			})
+			tel, err := DecodeTelemetry(s)
+			if err != nil {
+				t.Fatalf("DecodeTelemetry: %v", err)
+			}
+			if tel.Battery.Charging != tc.wantCharging {
+				t.Errorf("Charging = %v, want %v", tel.Battery.Charging, tc.wantCharging)
+			}
+			assertFloat(t, "current", tel.Battery.CurrentA, tc.wantCurrentA)
+			assertFloat(t, "power", tel.Battery.PowerW, tc.wantPowerW)
+		})
+	}
+}

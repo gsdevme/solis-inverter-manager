@@ -1,6 +1,9 @@
 package inverter
 
-import "time"
+import (
+	"math"
+	"time"
+)
 
 // Telemetry is one decoded inverter reading, grouped by subsystem. Physical
 // values are float64 at the package boundary with scale already applied; a 0.0
@@ -17,16 +20,19 @@ type Telemetry struct {
 	System  System
 }
 
-// Battery holds the decoded battery subsystem values.
+// Battery holds the decoded battery subsystem values. This firmware reports the
+// battery current and power as magnitudes, so CurrentA and PowerW take their
+// sign from the 33135 direction flag rather than from the register word: +
+// = charge, − = discharge.
 type Battery struct {
 	VoltageV    float64 // 33133, ÷10 V
-	CurrentA    float64 // 33134 S16, ÷10 A (+ = charge, − = discharge)
+	CurrentA    float64 // 33134, ÷10 A, magnitude signed by 33135 (+ = charge, − = discharge)
 	Charging    bool    // 33135, 0 = charge, 1 = discharge
 	SOCPercent  float64 // 33139
 	SOHPercent  float64 // 33140
 	BMSVoltageV float64 // 33141, ÷100 V
 	BMSCurrentA float64 // 33142 S16, ÷10 A
-	PowerW      float64 // 33149·33150 S32 (+ = charge, − = discharge)
+	PowerW      float64 // 33149·33150, W, magnitude signed by 33135 (+ = charge, − = discharge)
 }
 
 // PV holds the decoded photovoltaic (DC) values.
@@ -79,6 +85,20 @@ func div10(v float64) float64 { return v / 10.0 }
 
 // div100 applies the ÷100 scale (BMS voltage, grid frequency).
 func div100(v float64) float64 { return v / 100.0 }
+
+// signedByDirection resolves a battery reading against the 33135 direction flag,
+// returning a positive value while charging and a negative one while
+// discharging. The raw register is treated as a magnitude — this firmware leaves
+// battery power and current unsigned even when discharging — so the flag, not the
+// register's own sign, decides the direction. Zero is returned unsigned so a
+// resting battery never publishes a negative zero.
+func signedByDirection(v float64, charging bool) float64 {
+	magnitude := math.Abs(v)
+	if charging || magnitude == 0 {
+		return magnitude
+	}
+	return -magnitude
+}
 
 // reader accumulates the first read error while decoding, so the field
 // assignments below stay declarative instead of interleaving error checks. Once
@@ -141,15 +161,16 @@ func DecodeTelemetry(s Snapshot) (Telemetry, error) {
 	r.join(err)
 	t.Time = rtc
 
+	charging := r.u16(RegBatteryDirection) == 0
 	t.Battery = Battery{
 		VoltageV:    div10(float64(r.u16(RegBatteryVoltage))),
-		CurrentA:    div10(float64(r.s16(RegBatteryCurrent))),
-		Charging:    r.u16(RegBatteryDirection) == 0,
+		CurrentA:    signedByDirection(div10(float64(r.s16(RegBatteryCurrent))), charging),
+		Charging:    charging,
 		SOCPercent:  float64(r.u16(RegBatterySOC)),
 		SOHPercent:  float64(r.u16(RegBatterySOH)),
 		BMSVoltageV: div100(float64(r.u16(RegBMSBatteryVoltage))),
 		BMSCurrentA: div10(float64(r.s16(RegBMSBatteryCurrent))),
-		PowerW:      float64(r.s32(RegBatteryPower)),
+		PowerW:      signedByDirection(float64(r.s32(RegBatteryPower)), charging),
 	}
 
 	t.PV = PV{

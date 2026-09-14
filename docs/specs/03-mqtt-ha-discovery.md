@@ -237,13 +237,16 @@ Notes:
 - **Signed power is one entity.** `battery_power` and `grid_power` are single
   **signed** power sensors (positive/negative encodes direction), not split into
   separate charge/discharge or import/export entities. `battery_charging` is a
-  derived binary_sensor for the charge/discharge direction.
+  derived binary_sensor for the charge/discharge direction. `battery_power` and
+  `battery_current` carry a sign the **decode** applies from the 33135 direction
+  flag, because the inverter reports both registers as magnitudes (see
+  `02-register-map.md`).
 - **`battery_charge_power` / `battery_discharge_power` are derived convenience
   sensors**, added for Home Assistant compatibility: HA's Riemann-sum integration
   helper and the energy dashboard want an unsigned "power into the battery" and
   "power out of the battery", and a template per dashboard is worse than one field
   in the shared state document. They are computed **in `BuildState` from the single,
-  correctly-decoded signed S32** — `max(battery_power, 0)` and
+  direction-signed battery power** — `max(battery_power, 0)` and
   `max(-battery_power, 0)`, so exactly one is non-zero at a time and both are 0 W at
   idle (`splitBatteryPower`). This is **not** the legacy app's independent-halves
   decode bug (the skill's pitfall list): nothing re-reads or re-decodes the register,

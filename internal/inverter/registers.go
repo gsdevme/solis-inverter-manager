@@ -43,7 +43,7 @@ const (
 	RegWorkModeReadback = 33132
 
 	RegBatteryVoltage    = 33133
-	RegBatteryCurrent    = 33134 // S16, ÷10 A (+ = charge, − = discharge)
+	RegBatteryCurrent    = 33134 // ÷10 A magnitude; direction comes from 33135
 	RegBatteryDirection  = 33135 // 0 = charge, 1 = discharge
 	RegBatterySOC        = 33139
 	RegBatterySOH        = 33140
@@ -51,8 +51,8 @@ const (
 	RegBMSBatteryCurrent = 33142 // S16, ÷10 A
 	RegHouseLoadPower    = 33147
 
-	// RegBatteryPower is the MSW of the S32 battery power in watts
-	// (+ = charge, − = discharge).
+	// RegBatteryPower is the MSW of the 32-bit battery power in watts, reported as
+	// a magnitude; direction comes from 33135.
 	RegBatteryPower = 33149
 
 	RegBatteryTotalChargeEnergy    = 33161 // MSW of U32 kWh
