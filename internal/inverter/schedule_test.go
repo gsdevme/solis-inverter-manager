@@ -2,6 +2,8 @@ package inverter
 
 import (
 	"errors"
+	"fmt"
+	"strings"
 	"testing"
 )
 
@@ -184,6 +186,171 @@ func TestClockString(t *testing.T) {
 		if got := tc.clock.String(); got != tc.want {
 			t.Errorf("Clock%+v.String() = %q, want %q", tc.clock, got, tc.want)
 		}
+	}
+}
+
+// TestTimedSlotWriteRegisters pins the eight write registers for slot 1 and
+// slot 3 to the confirmed addresses, in the spec's field order. Both windows are
+// set here, which is the "charge block then discharge block" case.
+func TestTimedSlotWriteRegisters(t *testing.T) {
+	slot := TimedSlot{
+		Charge:    TimedWindow{Start: Clock{1, 2}, End: Clock{3, 4}},
+		Discharge: TimedWindow{Start: Clock{5, 6}, End: Clock{7, 8}},
+	}
+
+	for _, tc := range []struct {
+		name     string
+		i        int
+		wantBase int
+	}{
+		{"slot 1", 0, 43143},
+		{"slot 3", 2, 43163},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := TimedSlotWriteRegisters(tc.i, slot)
+			want := []Register{
+				{Addr: tc.wantBase + 0, Value: 1},
+				{Addr: tc.wantBase + 1, Value: 2},
+				{Addr: tc.wantBase + 2, Value: 3},
+				{Addr: tc.wantBase + 3, Value: 4},
+				{Addr: tc.wantBase + 4, Value: 5},
+				{Addr: tc.wantBase + 5, Value: 6},
+				{Addr: tc.wantBase + 6, Value: 7},
+				{Addr: tc.wantBase + 7, Value: 8},
+			}
+			if len(got) != len(want) {
+				t.Fatalf("TimedSlotWriteRegisters(%d, ...) = %+v, want %+v", tc.i, got, want)
+			}
+			for i := range want {
+				if got[i] != want[i] {
+					t.Errorf("TimedSlotWriteRegisters(%d, ...)[%d] = %+v, want %+v", tc.i, i, got[i], want[i])
+				}
+			}
+		})
+	}
+}
+
+// TestTimedSlotWriteRegistersClearsUnusedDirectionFirst pins the block ordering
+// rule that keeps a direction swap out of the both-windows-set state: the
+// direction whose desired window is unset is listed first, so its zeros land
+// before the other direction's window does.
+func TestTimedSlotWriteRegistersClearsUnusedDirectionFirst(t *testing.T) {
+	charge := TimedWindow{Start: Clock{1, 2}, End: Clock{3, 4}}
+	discharge := TimedWindow{Start: Clock{5, 6}, End: Clock{7, 8}}
+
+	for _, tc := range []struct {
+		name      string
+		slot      TimedSlot
+		wantAddrs []int
+	}{
+		{
+			name:      "charge only clears the discharge block first",
+			slot:      TimedSlot{Charge: charge},
+			wantAddrs: []int{43167, 43168, 43169, 43170, 43163, 43164, 43165, 43166},
+		},
+		{
+			name:      "discharge only clears the charge block first",
+			slot:      TimedSlot{Discharge: discharge},
+			wantAddrs: []int{43163, 43164, 43165, 43166, 43167, 43168, 43169, 43170},
+		},
+		{
+			name:      "both unset keeps the charge block first",
+			slot:      TimedSlot{},
+			wantAddrs: []int{43163, 43164, 43165, 43166, 43167, 43168, 43169, 43170},
+		},
+		{
+			name:      "both set keeps the charge block first",
+			slot:      TimedSlot{Charge: charge, Discharge: discharge},
+			wantAddrs: []int{43163, 43164, 43165, 43166, 43167, 43168, 43169, 43170},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := TimedSlotWriteRegisters(2, tc.slot)
+			if len(got) != len(tc.wantAddrs) {
+				t.Fatalf("TimedSlotWriteRegisters(2, %+v) = %+v, want %d registers", tc.slot, got, len(tc.wantAddrs))
+			}
+			for i, addr := range tc.wantAddrs {
+				if got[i].Addr != addr {
+					t.Errorf("TimedSlotWriteRegisters(2, %+v)[%d].Addr = %d, want %d", tc.slot, i, got[i].Addr, addr)
+				}
+			}
+		})
+	}
+}
+
+// TestTimedSlotWriteRegistersPanicsOutOfRange asserts a bad slot index panics
+// rather than silently writing the wrong registers.
+func TestTimedSlotWriteRegistersPanicsOutOfRange(t *testing.T) {
+	for _, i := range []int{-1, 3} {
+		t.Run(fmt.Sprintf("i=%d", i), func(t *testing.T) {
+			defer func() {
+				if recover() == nil {
+					t.Fatalf("TimedSlotWriteRegisters(%d, ...) did not panic", i)
+				}
+			}()
+			TimedSlotWriteRegisters(i, TimedSlot{})
+		})
+	}
+}
+
+// TestTimedSlotWriteRegistersRoundTrip proves TimedSlotWriteRegisters and
+// DecodeTimedSlots are inverse: writing every slot's registers from a
+// TimedSlots value and decoding the resulting snapshot reproduces the input.
+func TestTimedSlotWriteRegistersRoundTrip(t *testing.T) {
+	want := TimedSlots{
+		{Charge: TimedWindow{Start: Clock{1, 2}, End: Clock{3, 4}}, Discharge: TimedWindow{Start: Clock{5, 6}, End: Clock{7, 8}}},
+		{Charge: TimedWindow{Start: Clock{9, 10}, End: Clock{11, 12}}, Discharge: TimedWindow{Start: Clock{13, 14}, End: Clock{15, 16}}},
+		{Charge: TimedWindow{Start: Clock{17, 18}, End: Clock{19, 20}}, Discharge: TimedWindow{Start: Clock{21, 22}, End: Clock{23, 24}}},
+	}
+
+	s := timedSlotSnapshot()
+	for i, slot := range want {
+		for _, reg := range TimedSlotWriteRegisters(i, slot) {
+			s[0].Regs[reg.Addr-RegTimedChargeCurrent] = reg.Value
+		}
+	}
+
+	got, err := DecodeTimedSlots(s)
+	if err != nil {
+		t.Fatalf("DecodeTimedSlots: %v", err)
+	}
+	if got != want {
+		t.Errorf("round trip =\n%+v\nwant\n%+v", got, want)
+	}
+}
+
+func TestParseClock(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		in      string
+		want    Clock
+		wantErr bool
+	}{
+		{"midnight", "00:00", Clock{0, 0}, false},
+		{"last minute", "23:59", Clock{23, 59}, false},
+		{"hour out of range", "24:00", Clock{}, true},
+		{"single-digit hour", "7:05", Clock{}, true},
+		{"minute out of range", "12:60", Clock{}, true},
+		{"empty", "", Clock{}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := ParseClock(tc.in)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("ParseClock(%q) = %v, want error", tc.in, got)
+				}
+				if !strings.Contains(err.Error(), tc.in) {
+					t.Errorf("ParseClock(%q) error = %q, want it to mention the input", tc.in, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("ParseClock(%q): %v", tc.in, err)
+			}
+			if got != tc.want {
+				t.Errorf("ParseClock(%q) = %+v, want %+v", tc.in, got, tc.want)
+			}
+		})
 	}
 }
 

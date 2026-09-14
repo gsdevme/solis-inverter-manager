@@ -54,17 +54,20 @@ type State struct {
 	RTC             string  `json:"rtc"`
 	RTCDrift        float64 `json:"rtc_drift"`
 
-	// The derived schedule sensors. TouWindow and BoostEndsAt are pointers and
-	// carry no omitempty, so an unconfigured schedule publishes an explicit null
-	// and Home Assistant resolves the entity to "unknown" rather than keeping a
-	// stale value.
+	// The derived schedule fields. TouWindow, BoostEndsAt and BoostSelect are
+	// pointers and carry no omitempty, so a schedule they cannot express publishes
+	// an explicit null and Home Assistant resolves the entity to "unknown" rather
+	// than keeping a stale value. BoostSelect is null only for a boost window that
+	// matches no select option; sensor.boost still reports the real window.
 	TouWindow   *string `json:"tou_window"`
 	Boost       string  `json:"boost"`
 	BoostEndsAt *string `json:"boost_ends_at"`
+	BoostSelect *string `json:"boost_select"`
 
 	SetChargeCurrent    float64 `json:"set_charge_current"`
 	SetDischargeCurrent float64 `json:"set_discharge_current"`
-	OptimalIncome       string  `json:"optimal_income"`
+	// OptimalIncome is the select's option: "Run" or "Stop".
+	OptimalIncome string `json:"optimal_income"`
 }
 
 // Setpoints is the current writable-control state, read from the holding bank
@@ -76,9 +79,11 @@ type State struct {
 type Setpoints struct {
 	SetChargeCurrent    float64
 	SetDischargeCurrent float64
-	OptimalIncome       bool
-	Slots               inverter.TimedSlots
-	BoostEndsAt         time.Time
+	// OptimalIncome is the work-mode timed bit: true publishes the select's
+	// "Run" option, false its "Stop".
+	OptimalIncome bool
+	Slots         inverter.TimedSlots
+	BoostEndsAt   time.Time
 }
 
 // BuildState marshals a decoded Telemetry (plus the externally computed clock
@@ -86,9 +91,9 @@ type Setpoints struct {
 // drift is supplied by the caller because this package is pure and must not read
 // the wall clock.
 func (c Config) BuildState(t inverter.Telemetry, drift time.Duration, sp Setpoints) (Message, error) {
-	optimalIncome := "OFF"
+	optimalIncome := "Stop"
 	if sp.OptimalIncome {
-		optimalIncome = "ON"
+		optimalIncome = "Run"
 	}
 	st := State{
 		BatteryVoltage:  t.Battery.VoltageV,
@@ -133,6 +138,7 @@ func (c Config) BuildState(t inverter.Telemetry, drift time.Duration, sp Setpoin
 		TouWindow:   touWindowLabel(sp.Slots),
 		Boost:       schedule.BoostOf(sp.Slots).String(),
 		BoostEndsAt: timestampLabel(sp.BoostEndsAt),
+		BoostSelect: schedule.BoostSelectState(sp.Slots),
 
 		SetChargeCurrent:    sp.SetChargeCurrent,
 		SetDischargeCurrent: sp.SetDischargeCurrent,
@@ -167,21 +173,17 @@ func timestampLabel(at time.Time) *string {
 	return &label
 }
 
-// workModeLabel renders a WorkMode as a stable human label. The two named
-// setpoints map to fixed strings; any other combination joins the active flags in
-// a deterministic order, falling back to the raw register value when no known
-// flag is set.
+// workModeLabel renders a WorkMode as the energy-storage mode it reports. Bit 0
+// is Self Use, the only storage mode ever observed on this inverter, and covers
+// both observed register values (35 and 33, which differ only in the Optimal
+// Income bit that select.optimal_income owns). Any other combination joins the
+// active flags in a deterministic order, falling back to the raw register value
+// when no known flag is set, so an unknown mode is never mislabelled.
 func workModeLabel(w inverter.WorkMode) string {
-	switch w.Raw {
-	case inverter.WorkModeTimedOn:
-		return "Optimal income ON"
-	case inverter.WorkModeTimedOff:
-		return "Optimal income OFF"
+	if w.SelfUse {
+		return "Self Use"
 	}
 	var flags []string
-	if w.SelfUse {
-		flags = append(flags, "self_use")
-	}
 	if w.Timed {
 		flags = append(flags, "timed")
 	}

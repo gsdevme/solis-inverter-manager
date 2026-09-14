@@ -14,7 +14,7 @@ var wantKeys = []string{
 	"battery_total_discharge", "battery_discharge_today",
 	"status", "operating_status", "work_mode", "rtc", "rtc_drift",
 	"tou_window", "boost", "boost_ends_at",
-	"set_charge_current", "set_discharge_current", "optimal_income", "rtc_sync",
+	"set_charge_current", "set_discharge_current", "optimal_income", "boost_select", "rtc_sync",
 }
 
 func TestEntitiesCoverEveryTelemetryField(t *testing.T) {
@@ -30,7 +30,7 @@ func TestEntitiesCoverEveryTelemetryField(t *testing.T) {
 		}
 		got[e.Key] = true
 		switch e.Component {
-		case Sensor, BinarySensor, Number, Switch, Button:
+		case Sensor, BinarySensor, Number, Switch, Button, Select:
 		default:
 			t.Errorf("entity %q has unexpected component %q", e.Key, e.Component)
 		}
@@ -38,6 +38,19 @@ func TestEntitiesCoverEveryTelemetryField(t *testing.T) {
 	for _, k := range wantKeys {
 		if !got[k] {
 			t.Errorf("missing entity key %q", k)
+		}
+	}
+}
+
+// TestSelectEntitiesCarryOptions guards the Select invariant: a select with no
+// options discovers an unusable entity in Home Assistant.
+func TestSelectEntitiesCarryOptions(t *testing.T) {
+	for _, e := range Entities() {
+		if e.Component == Select && len(e.Options) == 0 {
+			t.Errorf("select %q carries no options", e.Key)
+		}
+		if e.Component != Select && len(e.Options) != 0 {
+			t.Errorf("%s %q carries options but is not a select", e.Component, e.Key)
 		}
 	}
 }

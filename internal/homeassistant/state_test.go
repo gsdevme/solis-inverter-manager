@@ -43,11 +43,11 @@ func TestStateTagsEqualEntityKeys(t *testing.T) {
 		}
 		keys[e.Key] = true
 	}
-	if len(keys) != 39 {
-		t.Errorf("got %d stateful entity keys, want 39", len(keys))
+	if len(keys) != 40 {
+		t.Errorf("got %d stateful entity keys, want 40", len(keys))
 	}
-	if len(tags) != 39 {
-		t.Errorf("got %d state json tags, want 39", len(tags))
+	if len(tags) != 40 {
+		t.Errorf("got %d state json tags, want 40", len(tags))
 	}
 	for k := range keys {
 		if !tags[k] {
@@ -129,8 +129,8 @@ func TestBuildStateTopicAndValues(t *testing.T) {
 		t.Errorf("battery_charging = %v, want false", got["battery_charging"])
 	}
 	// work_mode label.
-	if got["work_mode"] != "Optimal income ON" {
-		t.Errorf("work_mode = %v, want Optimal income ON", got["work_mode"])
+	if got["work_mode"] != "Self Use" {
+		t.Errorf("work_mode = %v, want Self Use", got["work_mode"])
 	}
 	// Raw system enums as numbers.
 	if got["status"] != float64(3) || got["operating_status"] != float64(4099) {
@@ -140,9 +140,9 @@ func TestBuildStateTopicAndValues(t *testing.T) {
 	if got["set_charge_current"] != 25.5 || got["set_discharge_current"] != float64(40) {
 		t.Errorf("setpoints = %v / %v", got["set_charge_current"], got["set_discharge_current"])
 	}
-	// OptimalIncome bool rendered as ON/OFF string.
-	if got["optimal_income"] != "ON" {
-		t.Errorf("optimal_income = %v, want ON", got["optimal_income"])
+	// OptimalIncome bool rendered as the select's Run/Stop option.
+	if got["optimal_income"] != "Run" {
+		t.Errorf("optimal_income = %v, want Run", got["optimal_income"])
 	}
 	// rtc_sync (button) must NOT appear in the state document.
 	if _, present := got["rtc_sync"]; present {
@@ -150,7 +150,7 @@ func TestBuildStateTopicAndValues(t *testing.T) {
 	}
 }
 
-func TestBuildStateOptimalIncomeOff(t *testing.T) {
+func TestBuildStateOptimalIncomeStop(t *testing.T) {
 	msg, err := testConfig().BuildState(sampleTelemetry(), 0, Setpoints{OptimalIncome: false})
 	if err != nil {
 		t.Fatalf("BuildState: %v", err)
@@ -159,8 +159,8 @@ func TestBuildStateOptimalIncomeOff(t *testing.T) {
 	if err := json.Unmarshal(msg.Payload, &got); err != nil {
 		t.Fatalf("bad payload: %v", err)
 	}
-	if got["optimal_income"] != "OFF" {
-		t.Errorf("optimal_income = %v, want OFF", got["optimal_income"])
+	if got["optimal_income"] != "Stop" {
+		t.Errorf("optimal_income = %v, want Stop", got["optimal_income"])
 	}
 }
 
@@ -169,11 +169,13 @@ func TestWorkModeLabel(t *testing.T) {
 		raw  uint16
 		want string
 	}{
-		{inverter.WorkModeTimedOn, "Optimal income ON"},
-		{inverter.WorkModeTimedOff, "Optimal income OFF"},
-		{1, "self_use"},
+		// Both observed values set bit 0, so both read as the storage mode.
+		{inverter.WorkModeTimedOn, "Self Use"},
+		{inverter.WorkModeTimedOff, "Self Use"},
+		{1, "Self Use"},
+		{3, "Self Use"},
+		// Anything without bit 0 falls back to the flag list or the raw value.
 		{2, "timed"},
-		{3, "self_use+timed"},
 		{0, "0"},
 		{1 << 5, "allow_grid_charge"},
 	}
@@ -197,10 +199,11 @@ func touSlots() inverter.TimedSlots {
 	}
 }
 
-// TestBuildStateSchedule covers the three derived schedule sensors for a
-// configured schedule: the midnight-split Time-of-Use pair reads as one window,
-// slot 3 reads as the boost, and boost_ends_at is the RFC3339 form of the
-// caller-supplied end (BuildState is pure and never resolves it itself).
+// TestBuildStateSchedule covers the derived schedule fields for a configured
+// schedule: the midnight-split Time-of-Use pair reads as one window, slot 3
+// reads as the boost and as the matching select option, and boost_ends_at is the
+// RFC3339 form of the caller-supplied end (BuildState is pure and never resolves
+// it itself).
 func TestBuildStateSchedule(t *testing.T) {
 	endsAt := time.Date(2026, 9, 13, 14, 56, 0, 0, time.UTC)
 	msg, err := testConfig().BuildState(sampleTelemetry(), 0, Setpoints{
@@ -223,6 +226,32 @@ func TestBuildStateSchedule(t *testing.T) {
 	if got["boost_ends_at"] != endsAt.Format(time.RFC3339) {
 		t.Errorf("boost_ends_at = %v, want %s", got["boost_ends_at"], endsAt.Format(time.RFC3339))
 	}
+	// 14:02-14:56 is 54 minutes, which snaps up to the 60 min option.
+	if got["boost_select"] != "Charge 60 min" {
+		t.Errorf("boost_select = %v, want Charge 60 min", got["boost_select"])
+	}
+}
+
+// TestBuildStateBoostSelectUnmappable covers a boost the select cannot express:
+// a 90-minute window is longer than any option, so boost_select publishes null
+// (HA "unknown") while sensor.boost still reports the real window.
+func TestBuildStateBoostSelectUnmappable(t *testing.T) {
+	slots := touSlots()
+	slots[2].Charge.End = inverter.Clock{Hour: 15, Minute: 32}
+	msg, err := testConfig().BuildState(sampleTelemetry(), 0, Setpoints{Slots: slots})
+	if err != nil {
+		t.Fatalf("BuildState: %v", err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(msg.Payload, &got); err != nil {
+		t.Fatalf("bad payload: %v", err)
+	}
+	if _, present := got["boost_select"]; !present {
+		t.Fatal("state is missing key \"boost_select\"; it must never be omitted")
+	}
+	if got["boost_select"] != nil {
+		t.Errorf("boost_select = %v, want null", got["boost_select"])
+	}
 }
 
 // TestBuildStateScheduleUnset covers an unconfigured schedule: tou_window and
@@ -237,7 +266,7 @@ func TestBuildStateScheduleUnset(t *testing.T) {
 	if err := json.Unmarshal(msg.Payload, &got); err != nil {
 		t.Fatalf("bad payload: %v", err)
 	}
-	for _, key := range []string{"tou_window", "boost", "boost_ends_at"} {
+	for _, key := range []string{"tou_window", "boost", "boost_ends_at", "boost_select"} {
 		if _, present := got[key]; !present {
 			t.Errorf("state is missing key %q; it must never be omitted", key)
 		}
@@ -250,5 +279,9 @@ func TestBuildStateScheduleUnset(t *testing.T) {
 	}
 	if got["boost"] != "Off" {
 		t.Errorf("boost = %v, want Off", got["boost"])
+	}
+	// An empty slot 3 is a real select state, not unknown.
+	if got["boost_select"] != "Off" {
+		t.Errorf("boost_select = %v, want Off", got["boost_select"])
 	}
 }

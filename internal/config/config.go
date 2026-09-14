@@ -12,11 +12,16 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/gsdevme/solis-inverter-manager/internal/schedule"
 )
 
 // MinPollInterval is the floor for POLL_INTERVAL, protecting the inverter's
 // datalogger from excessive polling.
 const MinPollInterval = 5 * time.Second
+
+// defaultToUWindow is the default TOU_WINDOW: 23:30-05:30 local time.
+const defaultToUWindow = "23:30-05:30"
 
 // redacted is the placeholder printed in place of any secret value.
 const redacted = "REDACTED"
@@ -64,6 +69,13 @@ type Config struct {
 	// subscription. Defaults to true (absent/empty CONTROLS_ENABLED enables
 	// controls); set CONTROLS_ENABLED=false to run read-only.
 	ControlsEnabled bool
+
+	// TOUWindow is the raw TOU_WINDOW setting, "HH:MM-HH:MM" local time,
+	// asserted into timed slots 1-2 by the schedule reconciler. Left unset
+	// it defaults to "23:30-05:30"; set to the empty string it disables ToU
+	// assertion entirely (slots 1-2 are left untouched). See
+	// schedule.ParseToUWindow for parsing.
+	TOUWindow string
 
 	// Health & logging
 	HealthAddr string
@@ -155,6 +167,17 @@ func Load() (*Config, error) {
 	}
 	c.ControlsEnabled = controlsEnabled
 
+	// TOU_WINDOW must distinguish "unset" (apply the default) from "set to the
+	// empty string" (disable ToU assertion), so it cannot use getEnv, which
+	// treats both the same way.
+	c.TOUWindow = defaultToUWindow
+	if v, ok := os.LookupEnv("TOU_WINDOW"); ok {
+		c.TOUWindow = v
+	}
+	if _, _, err := schedule.ParseToUWindow(c.TOUWindow); err != nil {
+		errs = append(errs, fmt.Errorf("TOU_WINDOW: %w", err))
+	}
+
 	rtcSyncEnabled, err := parseBool("RTC_SYNC_ENABLED", false)
 	if err != nil {
 		errs = append(errs, err)
@@ -189,11 +212,11 @@ func (c *Config) String() string {
 	}
 	return fmt.Sprintf("Config{mode=%s inverterIP=%s inverterSerial=%s inverterPort=%d "+
 		"socketTimeout=%s sidecar=%s poll=%s maxRetries=%d failThreshold=%d "+
-		"rtcSyncEnabled=%t rtcDriftThreshold=%s controlsEnabled=%t "+
+		"rtcSyncEnabled=%t rtcDriftThreshold=%s controlsEnabled=%t touWindow=%s "+
 		"broker=%s user=%s password=%s clientID=%s topicPrefix=%s haPrefix=%s health=%s log=%s/%s}",
 		c.Mode, c.InverterIP, serial, c.InverterPort, c.InverterSocketTimeout, c.SidecarURL,
 		c.PollInterval, c.PollMaxRetries, c.FailureThreshold,
-		c.RTCSyncEnabled, c.RTCDriftThreshold, c.ControlsEnabled, c.MQTTBrokerURL,
+		c.RTCSyncEnabled, c.RTCDriftThreshold, c.ControlsEnabled, c.TOUWindow, c.MQTTBrokerURL,
 		c.MQTTUsername, password, c.MQTTClientID, c.MQTTTopicPrefix, c.HADiscoveryPrefix,
 		c.HealthAddr, c.LogLevel, c.LogFormat)
 }
@@ -216,6 +239,7 @@ func (c *Config) LogValue() slog.Value {
 		slog.Bool("rtc_sync_enabled", c.RTCSyncEnabled),
 		slog.Duration("rtc_drift_threshold", c.RTCDriftThreshold),
 		slog.Bool("controls_enabled", c.ControlsEnabled),
+		slog.String("tou_window", c.TOUWindow),
 		slog.String("mqtt_broker_url", c.MQTTBrokerURL),
 		slog.String("mqtt_username", c.MQTTUsername),
 		slog.String("mqtt_password", redactSecret(c.MQTTPassword)),

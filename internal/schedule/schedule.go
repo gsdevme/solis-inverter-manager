@@ -87,20 +87,26 @@ func BoostOf(slots inverter.TimedSlots) Boost {
 	}
 }
 
-// EndsAt resolves the boost's end clock against now's date and location. An end
-// of 00:00 means end-of-day, so it resolves to the next midnight. A boost that is
-// Off has no end and returns the zero time.
+// EndsAt resolves the boost's end clock against now's date and location. A boost
+// that is Off has no end and returns the zero time.
+func (b Boost) EndsAt(now time.Time) time.Time {
+	if b.Mode == Off {
+		return time.Time{}
+	}
+	return endsAt(b.Window, now)
+}
+
+// endsAt resolves a window's End clock against now's date and location. An end of
+// 00:00 means end-of-day, so it resolves to the next midnight; the caller decides
+// what an unset window means, since a zero window would resolve the same way.
 //
 // time.Date normalises the result: a DST spring-forward gap resolves to the
 // shifted instant, and a fall-back repeat resolves to the earlier occurrence.
 // The slot's clock is the inverter's wall clock, resolved here against now's
 // location; that only holds while the inverter RTC tracks the host (drift is
 // published as rtc_drift, and RTC sync, when enabled, corrects it).
-func (b Boost) EndsAt(now time.Time) time.Time {
-	if b.Mode == Off {
-		return time.Time{}
-	}
-	end := b.Window.End
+func endsAt(w inverter.TimedWindow, now time.Time) time.Time {
+	end := w.End
 	day := now.Day()
 	if isMidnight(end) {
 		day++

@@ -32,20 +32,15 @@ Feature: MQTT writable controls (guarded, flash-sparing)
     When a "set_charge_current" command arrives with payload "200"
     Then holding register 43141 is written once with 600
 
-  Scenario: Optimal income ON flips only work-mode bit 1
-    Given holding register 43110 currently reads 33
-    When an "optimal_income" command arrives with payload "ON"
-    Then holding register 43110 is written once with 35
-
-  Scenario: Optimal income ON preserves unrelated work-mode bits
+  Scenario: Optimal income Run preserves unrelated work-mode bits
     Given holding register 43110 currently reads 289
-    When an "optimal_income" command arrives with payload "ON"
+    When an "optimal_income" command arrives with payload "Run"
     Then holding register 43110 is written once with 291
 
   Scenario: State document mirrors the writable-control setpoints
-    Given the writable controls read charge 12.5 A, discharge 7 A, optimal income ON
+    Given the writable controls read charge 12.5 A, discharge 7 A, optimal income Run
     When a poll is collected and state is published with those setpoints
     Then the state document contains the keys "set_charge_current,set_discharge_current,optimal_income"
     And the state document reports set_charge_current as 12.5
     And the state document reports set_discharge_current as 7
-    And the state document reports optimal_income as "ON"
+    And the state document reports optimal_income as "Run"

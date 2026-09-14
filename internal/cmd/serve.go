@@ -71,6 +71,17 @@ func touWindowAttr(slots inverter.TimedSlots) string {
 	return schedule.FormatWindow(window)
 }
 
+// boostSelectAttr renders the boost select's state for the no-broker telemetry
+// log, using the same derivation as the state document and reading "null" where
+// that publishes JSON null (a window the select's options cannot express).
+func boostSelectAttr(slots inverter.TimedSlots) string {
+	state := schedule.BoostSelectState(slots)
+	if state == nil {
+		return "null"
+	}
+	return *state
+}
+
 func runServe(ctx context.Context) error {
 	// A cancellable child of the incoming context so the shutdown path can stop the
 	// scheduler itself — notably on the healthErr branch, where the parent ctx is
@@ -133,6 +144,11 @@ func runServe(ctx context.Context) error {
 		sched  *scheduler.Scheduler
 	)
 
+	// fresh records whether each read decoded setpoints from the inverter or fell
+	// back to the cache, so the schedule reconcile can skip a cycle that never saw
+	// the live slots.
+	var fresh setpointFreshness
+
 	// readState is the scheduler's StateReader: it reads telemetry and the
 	// writable-control setpoints through the serialized wrapper. Telemetry and
 	// setpoints are read in separate holding frames, so a setpoints-read failure is
@@ -150,8 +166,10 @@ func runServe(ctx context.Context) error {
 		_, haSp, _ := sched.LastState()
 		if sp, err := controls.ReadSetpoints(ctx, wrapper); err != nil {
 			logger.Warn("read setpoints failed; reusing last-known setpoints", "err", err)
+			fresh.markStale()
 		} else {
 			haSp = toHASetpoints(sp, now())
+			fresh.markFresh()
 		}
 		return tel, haSp, nil
 	}
@@ -173,18 +191,20 @@ func runServe(ctx context.Context) error {
 				"optimal_income", haSp.OptimalIncome,
 				"tou_window", touWindowAttr(haSp.Slots),
 				"boost", schedule.BoostOf(haSp.Slots).String(),
+				"boost_select", boostSelectAttr(haSp.Slots),
 			)
 			return nil
 		}
 		return svc.PublishState(ctx, tel, haSp)
 	}
 
-	// rtcSyncer and commander are the controls seams, left as nil interfaces when
-	// controls are disabled (no handler) so the scheduler's nil-checks hold — a
-	// typed-nil *controls.Handler would defeat them.
+	// rtcSyncer, commander and reconciler are the controls seams, left as nil
+	// interfaces when controls are disabled (no handler) so the scheduler's
+	// nil-checks hold — a typed-nil *controls.Handler would defeat them.
 	var (
-		rtcSyncer scheduler.RTCSyncer
-		commander scheduler.Commander
+		rtcSyncer  scheduler.RTCSyncer
+		commander  scheduler.Commander
+		reconciler scheduler.Reconciler
 	)
 
 	// MQTT is required in live mode and optional in mock. When a broker URL is
@@ -201,6 +221,9 @@ func runServe(ctx context.Context) error {
 			}
 			if err := svc.PublishDiscovery(ctx); err != nil {
 				logger.Warn("republish discovery failed", "err", err)
+			}
+			if err := svc.PublishDiscoveryRemovals(ctx); err != nil {
+				logger.Warn("republish discovery removals failed", "err", err)
 			}
 			if err := svc.PublishAvailability(ctx, true); err != nil {
 				logger.Warn("republish availability failed", "err", err)
@@ -236,40 +259,60 @@ func runServe(ctx context.Context) error {
 			return fmt.Errorf("mqtt: %w", err)
 		}
 		svcPtr.Store(publisher.New(mc, haCfg))
+	}
 
-		// Writable controls: build the command handler only when CONTROLS_ENABLED.
-		// When disabled, the 4 command entities are already omitted from discovery
-		// (haCfg.ControlsEnabled=false, ruling R1), so there is nothing to subscribe
-		// to and no handler is set — leaving rtcSyncer/commander nil.
-		if cfg.ControlsEnabled {
-			// refresh re-reads telemetry+setpoints through the wrapper and
-			// republishes state after any command that touched the inverter, then
-			// updates the scheduler cache so a reconnect in the window before the
-			// next poll republishes post-command values rather than stale ones.
-			refresh := func(ctx context.Context) {
-				tel, haSp, err := readState(ctx)
-				if err != nil {
-					logger.Warn("controls refresh: read failed", "err", err)
-					return
-				}
-				if svc := svcPtr.Load(); svc != nil {
-					if err := svc.PublishState(ctx, tel, haSp); err != nil {
-						logger.Warn("controls refresh: publish state failed", "err", err)
-					}
-				}
-				sched.RememberState(tel, haSp)
+	// TOU_WINDOW is parsed once here and handed to the command handler. Config
+	// validation already rejects a malformed window, so an error is impossible in
+	// practice; it is surfaced rather than swallowed so a future validation gap
+	// cannot silently disable Time-of-Use assertion.
+	touWindow, assertToU, err := schedule.ParseToUWindow(cfg.TOUWindow)
+	if err != nil {
+		return fmt.Errorf("tou window: %w", err)
+	}
+
+	// Writable controls: build the command handler whenever CONTROLS_ENABLED,
+	// independently of MQTT, because the handler also drives the poll-time
+	// reconcile and RTC auto-sync — both of which must run in the no-broker mock
+	// path. When controls are disabled the five command entities are already
+	// omitted from discovery (haCfg.ControlsEnabled=false, ruling R1), so there is
+	// nothing to subscribe to and no handler is built — leaving rtcSyncer,
+	// commander and reconciler nil.
+	if cfg.ControlsEnabled {
+		// refresh re-reads telemetry+setpoints through the wrapper and republishes
+		// state after any command that touched the inverter, then updates the
+		// scheduler cache so a reconnect in the window before the next poll
+		// republishes post-command values rather than stale ones. With no broker
+		// configured svcPtr is never stored and the publish is skipped.
+		refresh := func(ctx context.Context) {
+			tel, haSp, err := readState(ctx)
+			if err != nil {
+				logger.Warn("controls refresh: read failed", "err", err)
+				return
 			}
-			handler := controls.NewHandler(wrapper, logger, true, refresh, controls.WithNow(now))
-			rtcSyncer = handler
-			commander = handler
+			if svc := svcPtr.Load(); svc != nil {
+				if err := svc.PublishState(ctx, tel, haSp); err != nil {
+					logger.Warn("controls refresh: publish state failed", "err", err)
+				}
+			}
+			sched.RememberState(tel, haSp)
 		}
+		handler := controls.NewHandler(wrapper, logger, true, refresh,
+			controls.WithNow(now),
+			controls.WithToU(touWindow, assertToU),
+		)
+		rtcSyncer = handler
+		commander = handler
+		reconciler = fresh.gate(handler, logger)
 	}
 
 	if cfg.RTCSyncEnabled && !cfg.ControlsEnabled {
 		logger.Warn("RTC_SYNC_ENABLED is true but CONTROLS_ENABLED is false; RTC auto-sync is disabled because it requires the write path")
 	}
+	if cfg.TOUWindow != "" && !cfg.ControlsEnabled {
+		logger.Warn("ToU assertion is disabled because CONTROLS_ENABLED=false; it requires the write path", "tou_window", cfg.TOUWindow)
+	}
 
-	sched = scheduler.New(readerFunc(readState), publisherFunc(publishState), status, rtcSyncer, commander, scheduler.Config{
+	sched = scheduler.New(readerFunc(readState), publisherFunc(publishState), status, rtcSyncer, commander, reconciler, scheduler.Config{
 		PollInterval:      cfg.PollInterval,
 		MaxRetries:        cfg.PollMaxRetries,
 		RTCSyncEnabled:    cfg.RTCSyncEnabled,
@@ -292,6 +335,9 @@ func runServe(ctx context.Context) error {
 		svc := svcPtr.Load()
 		if err := svc.PublishDiscovery(ctx); err != nil {
 			logger.Warn("publish discovery failed", "err", err)
+		}
+		if err := svc.PublishDiscoveryRemovals(ctx); err != nil {
+			logger.Warn("publish discovery removals failed", "err", err)
 		}
 		if err := svc.PublishAvailability(ctx, true); err != nil {
 			logger.Warn("publish availability failed", "err", err)

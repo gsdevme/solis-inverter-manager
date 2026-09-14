@@ -1,11 +1,14 @@
 package homeassistant
 
+import "github.com/gsdevme/solis-inverter-manager/internal/schedule"
+
 // Component types this package emits.
 const (
 	Sensor       = "sensor"
 	BinarySensor = "binary_sensor"
 	Number       = "number"
 	Switch       = "switch"
+	Select       = "select"
 	Button       = "button"
 )
 
@@ -25,7 +28,7 @@ type Config struct {
 	Serial          string // datalogger serial (device identifier)
 	// ControlsEnabled gates the writable command entities. When false (the
 	// default), BuildDiscovery emits only the read-only sensors; when true it
-	// also emits the Number/Switch/Button controls.
+	// also emits the Number/Select/Button controls.
 	ControlsEnabled bool
 }
 
@@ -49,7 +52,7 @@ type Message struct {
 // Key is both the discovery object-id suffix and the JSON field the entity reads
 // (value_json.<Key>), so every entity Key must match a state-DTO JSON tag.
 type Entity struct {
-	Component   string // "sensor" | "binary_sensor" | "number" | "switch" | "button"
+	Component   string // "sensor" | "binary_sensor" | "number" | "switch" | "select" | "button"
 	Key         string
 	Name        string
 	DeviceClass string // "" if none
@@ -60,7 +63,7 @@ type Entity struct {
 	// Unused by the current Solis catalogue; kept for parity with the shape.
 	InvertBool bool
 
-	// Command marks a writable control (Number/Switch/Button). When set,
+	// Command marks a writable control (Number/Select/Button). When set,
 	// BuildDiscovery emits a command_topic and the component-specific keys
 	// below, and gates the entity behind Config.ControlsEnabled.
 	Command bool
@@ -70,9 +73,14 @@ type Entity struct {
 	Mode           string
 
 	// Switch payloads (published on toggle) and states (matched in the shared
-	// state document by its value_template).
+	// state document by its value_template). Unused by the current Solis
+	// catalogue, which publishes no switch entity; kept for parity with the shape.
 	PayloadOn, PayloadOff string
 	StateOn, StateOff     string
+
+	// Options lists a Select's choices, in display order. A Select's state
+	// document value must always be one of them (or null for "unknown").
+	Options []string
 
 	// PayloadPress is the payload a Button publishes when pressed.
 	PayloadPress string
@@ -125,21 +133,23 @@ func Entities() []Entity {
 		// System.
 		{Component: Sensor, Key: "status", Name: "Status", Category: "diagnostic"},
 		{Component: Sensor, Key: "operating_status", Name: "Operating status", Category: "diagnostic"},
-		{Component: Sensor, Key: "work_mode", Name: "Work mode", Category: "diagnostic"},
+		{Component: Sensor, Key: "work_mode", Name: "Energy storage mode", Category: "diagnostic"},
 		{Component: Sensor, Key: "rtc", Name: "RTC", DeviceClass: "timestamp", Category: "diagnostic"},
 		{Component: Sensor, Key: "rtc_drift", Name: "RTC drift", DeviceClass: "duration", Unit: "s", Category: "diagnostic"},
 
-		// Derived schedule. Read-only in B1: these render the timed slots, which
-		// nothing writes yet, so they carry no Command.
+		// Derived schedule. Read-only renderings of the timed slots; the slots
+		// themselves are written through the boost_select control below.
 		{Component: Sensor, Key: "tou_window", Name: "Time-of-use window"},
 		{Component: Sensor, Key: "boost", Name: "Boost"},
 		{Component: Sensor, Key: "boost_ends_at", Name: "Boost ends at", DeviceClass: "timestamp"},
 
-		// Writable controls. Gated behind Config.ControlsEnabled in BuildDiscovery;
-		// always present in this catalogue so the state round-trip stays exhaustive.
+		// Writable controls, five in all. Gated behind Config.ControlsEnabled in
+		// BuildDiscovery; always present in this catalogue so the state round-trip
+		// stays exhaustive.
 		{Component: Number, Key: "set_charge_current", Name: "Set charge current", Command: true, Min: 0, Max: 60, Step: 0.1, Mode: "box", Unit: "A"},
 		{Component: Number, Key: "set_discharge_current", Name: "Set discharge current", Command: true, Min: 0, Max: 60, Step: 0.1, Mode: "box", Unit: "A"},
-		{Component: Switch, Key: "optimal_income", Name: "Optimal income", Command: true, PayloadOn: "ON", PayloadOff: "OFF", StateOn: "ON", StateOff: "OFF"},
+		{Component: Select, Key: "optimal_income", Name: "Optimal income", Command: true, Options: []string{"Run", "Stop"}},
+		{Component: Select, Key: "boost_select", Name: "Boost", Command: true, Options: schedule.BoostOptions()},
 		{Component: Button, Key: "rtc_sync", Name: "Sync RTC now", Command: true, PayloadPress: "PRESS", Category: "diagnostic"},
 	}
 }

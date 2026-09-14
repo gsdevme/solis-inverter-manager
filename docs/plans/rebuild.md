@@ -49,7 +49,7 @@ Writes: HA command topic → Go validates → **read-before-write guard** → si
   tick, exponential backoff, retained last-good state so HA never blanks;
   readiness flips after N consecutive failures.
 - HA controls: charge amps & discharge amps as `number` (0–60 A), optimal income
-  as `switch`/`select`, via command topics, validated server-side.
+  as `select`, via command topics, validated server-side.
 - **Read-before-write guard:** never issue a Modbus write unless a read shows the
   value differs — holding registers are flash-backed and needless writes wear
   flash. Applies to all setpoints (43141/43142 amps, 43110 work mode) and any RTC
@@ -82,14 +82,14 @@ TDD throughout; godog `.feature` coverage where behaviour is observable.
 | 2 — Thin Python sidecar | #19 | ✅ done | `sidecar/` `pysolarmanv5` transport, persistent socket, single lock, reconnect-on-error, REST-ish generic RPCs, `MODE=mock` fixture server, own requirements + Dockerfile + pytest; contract in `docs/specs/01-sidecar-contract.md`; `MODE=live` fc04/fc06 smoke verified against the real inverter |
 | 3 — Register map + decode (Go) | #20 | ✅ done | `internal/inverter` constants + decoders (fixture-tested against `docs/phase0/fixtures/`), `internal/sidecarclient` typed transport client; legacy Python monolith deleted |
 | 4 — HA discovery + state (read-only) | #21 | ✅ done | autopaho, LWT+availability, device + read-only entities, retained state JSON, reconnect re-publish |
-| 5 — Writable controls | #22 | ✅ done | `number` (amps 0–60), `switch`/`select` (work mode 33/35), RTC sync; read-before-write + re-read confirm |
+| 5 — Writable controls | #22 | ✅ done | `number` (amps 0–60), `select` (work mode 33/35), RTC sync; read-before-write + re-read confirm |
 | 6 — Scheduler | #23 | ✅ done | serialized ~60s poll, backoff, retained cache, failure-threshold readiness, injectable clock, opt-in threshold-gated RTC auto-sync |
 | 7 — Deployment | #24 | ✅ done | manager `Dockerfile` (distroless nonroot) + sidecar image; full `docker-compose` stack (mqtt + sidecar + manager); CI `docker-build` (build-only) + release-please/release.yml (multi-arch, build-only pending approval); two-container pod, ConfigMap/Secret, probes documented as reference examples in `08-deployment.md` (manifests live in a separate GitOps/Helm/Flux repo) |
 
 Exit criteria for each phase are on its GitHub issue.
 
-Post-rebuild, additive feature work continues under further issues: Tariff &
-Boost (#27 done; #28 B1/B2).
+Post-rebuild, additive feature work continues under further issues — Tariff &
+Boost: #27 done; #28 B1 done, B2 done (live smoke passed 2026-09-14).
 
 ## Config (env var catalog)
 
@@ -98,9 +98,10 @@ serial — numeric), `INVERTER_PORT` (8899), `INVERTER_SOCKET_TIMEOUT`,
 `SIDECAR_URL` (127.0.0.1), `MQTT_BROKER_URL`, `MQTT_USERNAME`, `MQTT_PASSWORD`,
 `MQTT_CLIENT_ID`, `MQTT_TOPIC_PREFIX`, `HA_DISCOVERY_PREFIX` (default
 `homeassistant`), `POLL_INTERVAL` (default 60s), `POLL_MAX_RETRIES`,
-`FAILURE_THRESHOLD`, `CONTROLS_ENABLED` (default true), `RTC_SYNC_ENABLED`
-(default false), `RTC_DRIFT_THRESHOLD` (default 60s), `HEALTH_ADDR` (`:8080`),
-`LOG_LEVEL`, `LOG_FORMAT`. See `docs/specs/05-config.md` and `.env.dist`.
+`FAILURE_THRESHOLD`, `CONTROLS_ENABLED` (default true), `TOU_WINDOW` (default
+`23:30-05:30`), `RTC_SYNC_ENABLED` (default false), `RTC_DRIFT_THRESHOLD`
+(default 60s), `HEALTH_ADDR` (`:8080`), `LOG_LEVEL`, `LOG_FORMAT`. See
+`docs/specs/05-config.md` and `.env.dist`.
 
 ## Verification
 

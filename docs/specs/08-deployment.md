@@ -64,10 +64,10 @@ mounted with `envFrom` so the manager sees the full env catalogue from
 [`05-config.md`](05-config.md).
 
 - **ConfigMap** — `MODE`, `INVERTER_IP`, `INVERTER_PORT`, `POLL_INTERVAL`,
-  `POLL_MAX_RETRIES`, `FAILURE_THRESHOLD`, `CONTROLS_ENABLED`, `RTC_SYNC_ENABLED`,
-  `RTC_DRIFT_THRESHOLD`, `MQTT_BROKER_URL`, `MQTT_USERNAME`, `MQTT_CLIENT_ID`,
-  `MQTT_TOPIC_PREFIX`, `HA_DISCOVERY_PREFIX`, `HEALTH_ADDR`, `LOG_LEVEL`,
-  `LOG_FORMAT`.
+  `POLL_MAX_RETRIES`, `FAILURE_THRESHOLD`, `CONTROLS_ENABLED`, `TOU_WINDOW`,
+  `RTC_SYNC_ENABLED`, `RTC_DRIFT_THRESHOLD`, `MQTT_BROKER_URL`, `MQTT_USERNAME`,
+  `MQTT_CLIENT_ID`, `MQTT_TOPIC_PREFIX`, `HA_DISCOVERY_PREFIX`, `HEALTH_ADDR`,
+  `LOG_LEVEL`, `LOG_FORMAT`.
 - **Secret** — `INVERTER_SERIAL` (datalogger serial) and `MQTT_PASSWORD`. These are
   the two values `config` redacts in logs; keep them out of the ConfigMap.
 
@@ -126,6 +126,7 @@ data:
   POLL_MAX_RETRIES: "3"
   FAILURE_THRESHOLD: "3"
   CONTROLS_ENABLED: "true"
+  TOU_WINDOW: "23:30-05:30"
   RTC_SYNC_ENABLED: "false"
   RTC_DRIFT_THRESHOLD: "60s"
   MQTT_BROKER_URL: "mqtt://mqtt.example:1883"

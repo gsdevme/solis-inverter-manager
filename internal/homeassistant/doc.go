@@ -10,6 +10,10 @@
 //   - Config.BuildState marshals the flat state document whose JSON tags equal the
 //     entity keys, so every entity's value_template resolves.
 //
+// Config.BuildDiscoveryRemovals adds a third, small payload set: empty configs
+// for entities a newer version retired, which is how Home Assistant is told to
+// delete them.
+//
 // The package performs no I/O and never reads the wall clock: clock drift is
 // passed into BuildState. Callers (the publisher) apply retain/QoS when
 // publishing. See docs/specs/03-mqtt-ha-discovery.md and the

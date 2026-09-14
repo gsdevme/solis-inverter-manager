@@ -145,11 +145,12 @@ Reads back at **both** `43110` (holding) and `33132` (input). A `uint16` bitfiel
 | 5 | 32 | Allow grid charge (**bit5 = 1 ⇒ allow**) |
 
 Named values used by the controls layer:
-- **35** = bit0+bit1+bit5 = self-use + grid-charge + **timed ON** ("optimal income ON").
-- **33** = bit0+bit5 = self-use + grid-charge + **timed OFF** ("optimal income OFF").
+- **35** = bit0+bit1+bit5 = self-use + grid-charge + **timed ON** ("Optimal Income: Run").
+- **33** = bit0+bit5 = self-use + grid-charge + **timed OFF** ("Optimal Income: Stop").
 
-Toggling "optimal income" flips **bit 1 only** (35 ↔ 33); the switch decode/encode
-MUST preserve the other bits (read-modify-write), never assume the whole field.
+Toggling Optimal Income flips **bit 1 only** (35 ↔ 33); the control's
+decode/encode MUST preserve the other bits (read-modify-write), never assume the
+whole field.
 
 ## Write-path & encoding
 

@@ -134,3 +134,34 @@ func TestPublishState(t *testing.T) {
 		t.Errorf("rtc = %q, want RFC3339 for 2026-09-12T10:00:00", rtc)
 	}
 }
+
+// TestPublishDiscoveryRemovals covers the stale-entity cleanup: one empty
+// retained payload to the retired switch's discovery topic, which is what tells
+// Home Assistant to delete the entity.
+func TestPublishDiscoveryRemovals(t *testing.T) {
+	rec := publisher.NewRecordingPublisher()
+	svc := publisher.New(rec, testConfig())
+
+	if err := svc.PublishDiscoveryRemovals(context.Background()); err != nil {
+		t.Fatalf("PublishDiscoveryRemovals: %v", err)
+	}
+
+	topics := rec.Topics()
+	if len(topics) != 1 {
+		t.Fatalf("removal topic count = %d, want 1", len(topics))
+	}
+	const want = "homeassistant/switch/1234567890_optimal_income/config"
+	if topics[0] != want {
+		t.Fatalf("removal topic = %q, want %q", topics[0], want)
+	}
+	rc, ok := rec.Get(want)
+	if !ok {
+		t.Fatalf("topic %q recorded in order but not retrievable", want)
+	}
+	if !rc.Retain {
+		t.Error("removal retain = false, want true")
+	}
+	if len(rc.Payload) != 0 {
+		t.Errorf("removal payload = %q, want empty", rc.Payload)
+	}
+}

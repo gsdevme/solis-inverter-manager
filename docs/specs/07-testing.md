@@ -18,11 +18,10 @@ accepting guarded writes. Shared by the godog suite and a standalone mock comman
 ## Acceptance suite (`features/`) (TODO)
 
 The godog harness runs under `go test ./features/...` (and `make test-e2e`). The
-scaffold ships `health.feature` (liveness up, readiness gates on the ready flag).
+suite is `health`, `mqtt_discovery`, `mqtt_controls`, `polling`, `schedule` and
+`schedule_controls` (one `.feature` file each, sharing `features/steps_test.go`).
 
-TODO: scenarios for startup discovery, a poll publishing decoded state, the
-READ-BEFORE-WRITE write-guard skipping a no-op setpoint write, and graceful
-shutdown publishing `offline`.
+TODO: a scenario for graceful shutdown publishing `offline`.
 
 ## Lint (TODO)
 

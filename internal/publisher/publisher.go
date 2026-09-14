@@ -48,6 +48,19 @@ func (s *Service) PublishDiscovery(ctx context.Context) error {
 	return nil
 }
 
+// PublishDiscoveryRemovals clears the retained discovery config of every entity
+// this version no longer publishes, which is how Home Assistant is told to
+// delete it. Each removal is an empty retained payload and is idempotent, so it
+// is safe to send on every startup.
+func (s *Service) PublishDiscoveryRemovals(ctx context.Context) error {
+	for _, m := range s.cfg.BuildDiscoveryRemovals() {
+		if err := s.pub.Publish(ctx, m.Topic, m.Payload, true); err != nil {
+			return fmt.Errorf("publish discovery removal %s: %w", m.Topic, err)
+		}
+	}
+	return nil
+}
+
 // PublishAvailability publishes "online" or "offline" retained to the
 // availability topic.
 func (s *Service) PublishAvailability(ctx context.Context, online bool) error {

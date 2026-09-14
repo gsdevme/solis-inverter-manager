@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/gsdevme/solis-inverter-manager/internal/inverter"
+	"github.com/gsdevme/solis-inverter-manager/internal/schedule"
 )
 
 // Command keys parsed from the trailing `.../<key>/set` topic segment.
@@ -16,8 +17,17 @@ const (
 	keySetChargeCurrent    = "set_charge_current"
 	keySetDischargeCurrent = "set_discharge_current"
 	keyOptimalIncome       = "optimal_income"
+	keyBoostSelect         = "boost_select"
 	keyRTCSync             = "rtc_sync"
 )
+
+// keyReconcile labels the reconcile's guarded writes in the log. Unlike the
+// command keys it never arrives on a topic: the scheduler drives the reconcile.
+const keyReconcile = "reconcile"
+
+// boostSlot is the index of the timed slot reserved for an ad-hoc boost. Slots 1
+// and 2 carry the Time-of-Use tariff, so only the last slot is free.
+const boostSlot = len(inverter.TimedSlots{}) - 1
 
 // Handler routes inbound MQTT command messages to guarded inverter writes.
 //
@@ -28,22 +38,36 @@ const (
 // malformed topics are logged and dropped. A kill-switch (enabled=false) drops
 // every command without touching the inverter.
 type Handler struct {
-	rw      HoldingReadWriter
-	log     *slog.Logger
-	enabled bool
-	refresh func(context.Context)
-	now     func() time.Time
+	rw        HoldingReadWriter
+	log       *slog.Logger
+	enabled   bool
+	refresh   func(context.Context)
+	now       func() time.Time
+	tou       inverter.TimedWindow
+	assertToU bool
 }
 
 // Option configures a Handler in NewHandler.
 type Option func(*Handler)
 
-// WithNow overrides the clock used for rtc_sync (for testability).
+// WithNow overrides the clock used for rtc_sync, boost planning and reconcile
+// expiry (for testability).
 func WithNow(now func() time.Time) Option {
 	return func(h *Handler) {
 		if now != nil {
 			h.now = now
 		}
+	}
+}
+
+// WithToU configures the Time-of-Use tariff the manager asserts in slots 1 and 2
+// and refuses to let a boost overlap. assert must be the enabled flag
+// schedule.ParseToUWindow reports: a zero window is never asserted, since that
+// would clear the owner's schedule rather than leave it alone.
+func WithToU(window inverter.TimedWindow, assert bool) Option {
+	return func(h *Handler) {
+		h.tou = window
+		h.assertToU = assert
 	}
 }
 
@@ -114,6 +138,8 @@ func (h *Handler) route(ctx context.Context, key string, payload []byte) bool {
 		return h.setCurrent(ctx, key, inverter.RegTimedDischargeCurrent, payload)
 	case keyOptimalIncome:
 		return h.setOptimalIncome(ctx, key, payload)
+	case keyBoostSelect:
+		return h.setBoost(ctx, key, payload)
 	case keyRTCSync:
 		return h.syncRTC(ctx, key)
 	default:
@@ -137,11 +163,12 @@ func (h *Handler) setCurrent(ctx context.Context, key string, addr int, payload 
 }
 
 // setOptimalIncome flips only bit 1 of the 43110 work-mode bitfield, preserving
-// every other bit. The payload must be exactly ON or OFF (case-insensitive).
+// every other bit. The payload must be exactly Run or Stop (case-insensitive),
+// the select's two options.
 func (h *Handler) setOptimalIncome(ctx context.Context, key string, payload []byte) bool {
-	on, ok := parseOnOff(payload)
+	on, ok := parseRunStop(payload)
 	if !ok {
-		h.log.Warn("controls: rejecting non-ON/OFF payload", "key", key, "payload", string(payload))
+		h.log.Warn("controls: rejecting non-Run/Stop payload", "key", key, "payload", string(payload))
 		return false
 	}
 	cur, err := readOne(ctx, h.rw, inverter.RegWorkMode)
@@ -154,6 +181,42 @@ func (h *Handler) setOptimalIncome(ctx context.Context, key string, payload []by
 	}
 	desired := inverter.DecodeWorkMode(cur).WithTimed(on).Encode()
 	h.guardOne(ctx, key, inverter.RegWorkMode, desired)
+	return true
+}
+
+// setBoost programs the boost slot from one of the select's options. It never
+// changes the work mode implicitly, so a boost requested while Optimal Income is
+// Stop is refused, as is one schedule.PlanBoost will not plan (a window crossing
+// midnight, or one fighting the asserted tariff). Every refusal still reports
+// "routed" so the refresh republishes the derived state and the select snaps back
+// to Off; only a payload that is not an option at all is dropped outright.
+func (h *Handler) setBoost(ctx context.Context, key string, payload []byte) bool {
+	mode, minutes, ok := schedule.ParseBoostOption(string(payload))
+	if !ok {
+		h.log.Warn("controls: invalid boost option", "key", key, "payload", string(payload))
+		return false
+	}
+	if mode == schedule.Off {
+		_, _ = h.writeRegisters(ctx, key, inverter.TimedSlotWriteRegisters(boostSlot, inverter.TimedSlot{}))
+		return true
+	}
+
+	cur, err := readOne(ctx, h.rw, inverter.RegWorkMode)
+	if err != nil {
+		h.log.Error("controls: work-mode read failed", "key", key, "err", err)
+		return true
+	}
+	if !inverter.DecodeWorkMode(cur).Timed {
+		h.log.Warn("controls: boost rejected: optimal income is Stop", "key", key, "option", string(payload))
+		return true
+	}
+
+	slot, err := schedule.PlanBoost(mode, minutes, h.now(), h.tou, h.assertToU)
+	if err != nil {
+		h.log.Warn("controls: boost rejected", "key", key, "option", string(payload), "reason", err)
+		return true
+	}
+	_, _ = h.writeRegisters(ctx, key, inverter.TimedSlotWriteRegisters(boostSlot, slot))
 	return true
 }
 
@@ -181,41 +244,87 @@ func (h *Handler) SyncRTC(ctx context.Context) (bool, error) {
 // outcome, and returns whether any write was issued plus the first error seen. It
 // backs both the manual command (syncRTC) and the scheduler seam (SyncRTC).
 func (h *Handler) syncRTCTo(ctx context.Context, key string) (bool, error) {
+	regs := inverter.RTCWriteRegisters(h.now())
+	return h.writeRegisters(ctx, key, regs[:])
+}
+
+// writeRegisters guards each register in order under the given log key and
+// reports whether any write was issued plus the first error still standing. A
+// failing register does not abort the sequence: the remaining registers are still
+// attempted, so one transport hiccup cannot leave the rest of a schedule or an
+// RTC sync unattempted.
+//
+// Every register whose guard failed without a confirmed write (res.Wrote ==
+// false) is then retried once, in the original order, after the pass. Such a
+// failure does not prove the fc06 never reached the inverter — the write can
+// land and only the reply be lost — but the retry is safe either way: it
+// re-enters the full read-before-write guard, which re-reads first and skips a
+// register that already holds the desired value, so retrying after a landed
+// write costs no extra flash wear. A register written but not confirmed by the
+// re-read is not retried: the inverter did take the write, and re-issuing it
+// would spend flash on a disagreement the next poll re-reads anyway. One retry
+// only, with no sleep, because the caller holds the API mutex for the whole
+// command.
+//
+// The retry replaces that register's outcome: a retry that succeeds clears the
+// error its first attempt reported, and the returned error is then the first
+// error remaining in register order (nil when none remains). wrote stays true if
+// any attempt, first or retried, issued an fc06.
+func (h *Handler) writeRegisters(ctx context.Context, key string, regs []inverter.Register) (bool, error) {
 	wrote := false
-	var firstErr error
-	for _, reg := range inverter.RTCWriteRegisters(h.now()) {
+	errs := make([]error, len(regs))
+	var lost []int
+
+	for i, reg := range regs {
 		res, err := Guard(ctx, h.rw, reg.Addr, reg.Value)
 		h.logGuard(key, reg.Addr, reg.Value, res, err)
-		if res.Wrote {
-			wrote = true
-		}
-		if err != nil && firstErr == nil {
-			firstErr = err
+		wrote = wrote || res.Wrote
+		errs[i] = err
+		if err != nil && !res.Wrote {
+			lost = append(lost, i)
 		}
 	}
-	return wrote, firstErr
+
+	for _, i := range lost {
+		reg := regs[i]
+		res, err := Guard(ctx, h.rw, reg.Addr, reg.Value)
+		h.logGuard(key, reg.Addr, reg.Value, res, err, "retry", true)
+		wrote = wrote || res.Wrote
+		errs[i] = err
+	}
+
+	for _, err := range errs {
+		if err != nil {
+			return wrote, err
+		}
+	}
+	return wrote, nil
 }
 
 // guardOne runs Guard for one register and logs the outcome. The single-register
-// command paths (amps, work-mode) use it; syncRTCTo calls Guard directly so it can
-// aggregate the per-register results.
+// command paths (amps, work-mode) use it; multi-register paths go through
+// writeRegisters, which aggregates the per-register results.
 func (h *Handler) guardOne(ctx context.Context, key string, addr int, value uint16) {
 	res, err := Guard(ctx, h.rw, addr, value)
 	h.logGuard(key, addr, value, res, err)
 }
 
 // logGuard logs one guarded-write outcome, classifying a re-read mismatch (error)
-// apart from a transport failure, a skip (no-op) and a confirmed write.
-func (h *Handler) logGuard(key string, addr int, value uint16, res Result, err error) {
+// apart from a transport failure, a skip (no-op) and a confirmed write. extra is
+// appended to every line as additional slog attributes; writeRegisters' retry
+// pass passes "retry", true so an operator can tell a register's retried line
+// apart from its first-pass line. The first pass calls with no extra, so its
+// lines are unchanged.
+func (h *Handler) logGuard(key string, addr int, value uint16, res Result, err error, extra ...any) {
 	switch {
 	case err != nil && res.Wrote:
-		h.log.Error("controls: write did not confirm", "key", key, "addr", addr, "desired", value, "reread", res.New, "err", err)
+		h.log.Error("controls: write did not confirm", append([]any{"key", key, "addr", addr, "desired", value, "reread", res.New, "err", err}, extra...)...)
 	case err != nil:
-		h.log.Error("controls: guarded write failed", "key", key, "addr", addr, "desired", value, "err", err)
+		h.log.Error("controls: guarded write failed", append([]any{"key", key, "addr", addr, "desired", value, "err", err}, extra...)...)
 	case res.Skipped:
-		h.log.Info("controls: write skipped (no-op)", "key", key, "addr", addr, "value", value)
+		h.log.Info("controls: write skipped (no-op)", append([]any{"key", key, "addr", addr, "value", value}, extra...)...)
 	default:
-		h.log.Info("controls: write confirmed", "key", key, "addr", addr, "old", res.Old, "new", res.New)
+		h.log.Info("controls: write confirmed", append([]any{"key", key, "addr", addr, "old", res.Old, "new", res.New}, extra...)...)
 	}
 }
 
@@ -236,13 +345,14 @@ func commandKey(topic string) (string, bool) {
 	return key, true
 }
 
-// parseOnOff accepts exactly "ON" or "OFF" (case-insensitive) and reports the
-// boolean plus whether the payload was valid.
-func parseOnOff(payload []byte) (on, ok bool) {
+// parseRunStop accepts exactly "Run" or "Stop" (case-insensitive), the two
+// options of the Optimal Income select, and reports the boolean plus whether the
+// payload was valid.
+func parseRunStop(payload []byte) (on, ok bool) {
 	switch strings.ToUpper(strings.TrimSpace(string(payload))) {
-	case "ON":
+	case "RUN":
 		return true, true
-	case "OFF":
+	case "STOP":
 		return false, true
 	default:
 		return false, false

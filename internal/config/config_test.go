@@ -133,6 +133,35 @@ func TestBadRTCDriftThreshold(t *testing.T) {
 	}
 }
 
+func TestTOUWindowDefault(t *testing.T) {
+	setEnv(t, nil)
+	c, err := Load()
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if c.TOUWindow != "23:30-05:30" {
+		t.Errorf("tou window = %q, want 23:30-05:30", c.TOUWindow)
+	}
+}
+
+func TestTOUWindowEmptyDisablesAssertion(t *testing.T) {
+	setEnv(t, map[string]string{"TOU_WINDOW": ""})
+	c, err := Load()
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if c.TOUWindow != "" {
+		t.Errorf("tou window = %q, want empty", c.TOUWindow)
+	}
+}
+
+func TestTOUWindowInvalid(t *testing.T) {
+	setEnv(t, map[string]string{"TOU_WINDOW": "25:00-05:30"})
+	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "TOU_WINDOW") {
+		t.Fatalf("expected TOU_WINDOW validation error, got %v", err)
+	}
+}
+
 func TestRedaction(t *testing.T) {
 	setEnv(t, map[string]string{
 		"INVERTER_SERIAL": "SN-super-secret",

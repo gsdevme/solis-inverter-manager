@@ -1,6 +1,9 @@
 package inverter
 
-import "fmt"
+import (
+	"fmt"
+	"strconv"
+)
 
 // maxHour and maxMinute bound a valid time-of-day register pair.
 const (
@@ -126,4 +129,72 @@ func decodeClock(s Snapshot, hourAddr, minuteAddr int) (Clock, error) {
 		return Clock{}, fmt.Errorf("clock %d:%d (registers %d/%d) out of range", hour, minute, hourAddr, minuteAddr)
 	}
 	return Clock{Hour: uint8(hour), Minute: uint8(minute)}, nil
+}
+
+// ParseClock parses a clock in strict HH:MM form: exactly two digits for the
+// hour and two for the minute, bounded by maxHour and maxMinute. The returned
+// error names the offending input.
+func ParseClock(s string) (Clock, error) {
+	if len(s) != 5 || s[2] != ':' {
+		return Clock{}, fmt.Errorf("invalid clock %q: want HH:MM", s)
+	}
+	hour, err := strconv.ParseUint(s[:2], 10, 8)
+	if err != nil {
+		return Clock{}, fmt.Errorf("invalid clock %q: %w", s, err)
+	}
+	minute, err := strconv.ParseUint(s[3:], 10, 8)
+	if err != nil {
+		return Clock{}, fmt.Errorf("invalid clock %q: %w", s, err)
+	}
+	if hour > maxHour || minute > maxMinute {
+		return Clock{}, fmt.Errorf("invalid clock %q: out of range", s)
+	}
+	return Clock{Hour: uint8(hour), Minute: uint8(minute)}, nil
+}
+
+// Register is one holding-register write: address and value.
+type Register struct {
+	Addr  int
+	Value uint16
+}
+
+// TimedSlotWriteRegisters expands one timed slot's eight hour/minute registers
+// into address/value pairs. The leading current registers
+// (RegTimedChargeCurrent and RegTimedDischargeCurrent) are global to the
+// inverter, not part of a slot, and are never included here.
+//
+// Order is load-bearing, because the sidecar is fc06-only and a window is set
+// one word at a time: a direction whose desired window is unset is listed
+// before a direction whose window is set, so a slot swapping direction clears
+// the old window before programming the new one and never transits the
+// both-windows-set state the inverter has not been probed in. When both
+// directions are unset, or both are set, the charge block comes first. Within a
+// direction the order is always start hour, start minute, end hour, end minute,
+// so the transient is a superset of the target window rather than an inverted
+// one.
+//
+// TimedSlotWriteRegisters panics if i is outside 0..2: an out-of-range slot
+// index is a programming error, like a bad array index.
+func TimedSlotWriteRegisters(i int, slot TimedSlot) []Register {
+	if i < 0 || i > 2 {
+		panic(fmt.Sprintf("inverter: TimedSlotWriteRegisters: slot index %d out of range [0,2]", i))
+	}
+	base := timedSlotBase(i)
+	charge := timedWindowRegisters(base, timedChargeOffsets, slot.Charge)
+	discharge := timedWindowRegisters(base, timedDischargeOffsets, slot.Discharge)
+	if !slot.Charge.IsZero() && slot.Discharge.IsZero() {
+		return append(discharge, charge...)
+	}
+	return append(charge, discharge...)
+}
+
+// timedWindowRegisters expands one direction's four hour/minute registers in the
+// spec's field order: start hour, start minute, end hour, end minute.
+func timedWindowRegisters(base int, off timedWindowOffsets, w TimedWindow) []Register {
+	return []Register{
+		{Addr: base + off.startHour, Value: uint16(w.Start.Hour)},
+		{Addr: base + off.startMinute, Value: uint16(w.Start.Minute)},
+		{Addr: base + off.endHour, Value: uint16(w.End.Hour)},
+		{Addr: base + off.endMinute, Value: uint16(w.End.Minute)},
+	}
 }

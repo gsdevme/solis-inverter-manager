@@ -1,11 +1,12 @@
 # 09 — Schedule controls (Tariff & Boost, Stage B2)
 
 Stage B2 (#28) adds the **write side** of the timed schedule that B1 (REQ-HA-14)
-made readable: a `select.boost` that programs slot 3, manager-owned assertion of
-the time-of-use (ToU) window in slots 1–2, and a per-poll reconcile that clears an
-expired boost. It also reshapes the work-mode controls to match the Solis app's
-own vocabulary. This spec is the source of truth for that behaviour; `REQ-HA-15`
-to `REQ-HA-17` and `REQ-CF-07` in `REQUIREMENTS.md` carry the stable IDs.
+made readable: a `select.boost_select` that programs slot 3, manager-owned
+assertion of the time-of-use (ToU) window in slots 1–2, and a per-poll reconcile
+that clears an expired boost. It also reshapes the work-mode controls to match
+the Solis app's own vocabulary. This spec is the source of truth for that
+behaviour; `REQ-HA-15` to `REQ-HA-17` and `REQ-CF-07` in `REQUIREMENTS.md` carry
+the stable IDs.
 
 Register ground truth is `docs/phase0/findings.md` (Stage A section) and
 `02-register-map.md`. The READ-BEFORE-WRITE guard in `03-mqtt-ha-discovery.md`
@@ -17,7 +18,7 @@ Register ground truth is `docs/phase0/findings.md` (Stage A section) and
 |---|---|---|---|
 | Energy storage mode | `43110` bit 0 (+ unconfirmed bits for the other modes) | Self Use · Feed In Priority · Backup · Off Grid | `sensor.work_mode` "Energy storage mode", **read-only**, shows `Self Use` |
 | Optimal Income | `43110` bit 1 | Run · Stop | `select.optimal_income` **Run / Stop** (replaces the on/off switch) |
-| Timed charge/discharge slots 1–3 | `43141`–`43170` | H/M windows | `select.boost`, `tou_window`, `boost`, `boost_ends_at` |
+| Timed charge/discharge slots 1–3 | `43141`–`43170` | H/M windows | `select.boost_select`, `tou_window`, `boost`, `boost_ends_at` |
 
 "Optimal Income: Run" is the master enable for the whole timed schedule. Only
 two values of `43110` have ever been observed on this inverter (35 = Run, 33 =
@@ -35,9 +36,9 @@ There are **no timers, no time-of-day job and no persisted boost state**. Every
 poll already reads `43110`–`43170` in one frame (REQ-HA-14); a reconcile step
 runs immediately after the poll — the same hook as the RTC auto-sync
 (`REQ-SC-06`) — and guard-writes only the registers that differ. All HA state
-(`select.boost`, `boost`, `boost_ends_at`, `tou_window`) is **derived from the
-registers**, so a restart mid-boost simply adopts the running boost, and a
-missed poll cannot leave a stale window to re-fire tomorrow: the next poll,
+(`select.boost_select`, `boost`, `boost_ends_at`, `tou_window`) is **derived
+from the registers**, so a restart mid-boost simply adopts the running boost, and
+a missed poll cannot leave a stale window to re-fire tomorrow: the next poll,
 whenever it is, fixes it.
 
 **Contract:** slots 1–3 are manager-owned. Edits made in the Solis app are
@@ -49,7 +50,7 @@ as a boost, not reverted).
 | Env | Default | Meaning |
 |---|---|---|
 | `TOU_WINDOW` | `23:30-05:30` | `HH:MM-HH:MM`, local time. Crossing midnight is allowed and is the normal case. Empty string disables ToU assertion (slots 1–2 are left untouched). Invalid values fail config validation (`errors.Join`). |
-| `CONTROLS_ENABLED` | `true` (existing) | Kill switch, Ruling R1: when `false`, no `select` entities are discovered, no command subscription, **no reconcile** — B2 is fully read-only. |
+| `CONTROLS_ENABLED` | `true` (existing) | Kill switch, Ruling R1: when `false`, no `select` entities are discovered, no command subscription, **no reconcile** — B2 is fully read-only. When `true` the command handler is built whether or not an MQTT broker is configured, so the reconcile (and the RTC auto-sync) also run in the no-broker mock path; only the command subscription needs a broker. A non-empty `TOU_WINDOW` with controls disabled logs a startup warning. |
 
 Times are the deployment's local zone (`TZ`), the same clock the RTC code and
 `boost_ends_at` already use.
@@ -62,14 +63,27 @@ Times are the deployment's local zone (`TZ`), the same clock the RTC code and
 - `S < E`: slot 1 charge = `S→E`, slot 2 charge empty;
 - slot 1 and slot 2 **discharge** windows are asserted empty.
 
-Slot 3 desired = the current slot-3 window while `now < end`, otherwise empty.
-"Empty" is all four H/M registers of a window = 0 (see *Open item* on how a
-clear is written).
+Slot 3 desired is computed **per direction**, not per boost: each of the slot's
+two windows is kept while it is set and `now < end`, and cleared once it has
+ended. "Empty" is all four H/M registers of a window = 0 (see *Open item* on how
+a clear is written). In the normal case only one direction is ever set and the
+rule reads as "the boost while it runs"; the per-direction form matters when a
+partly written slot holds a remnant of the window a command was clearing beside
+the one it programmed — see *Partial writes* below.
+
+**Known limitation.** While both directions of slot 3 are set — the transient
+above, which the in-command retry (see *Partial writes*) keeps to at most one
+command — `BoostOf` (`internal/schedule`) prefers the charge window, so the
+HA-facing `boost` sensor, `boost_ends_at` and `boost_select` describe the charge
+window even when the discharge window is the one actually running as the boost.
+The per-direction reconcile above is unaffected by this: it keeps both windows
+in place for as long as both still read as running, and clears each only once
+its own `end` has passed.
 
 Charge/discharge current is **global** (`43141`/`43142`, the existing `number`
 entities) and is not part of the schedule.
 
-## `select.boost` (`REQ-HA-16`)
+## `select.boost_select` (`REQ-HA-16`)
 
 Options, in order:
 
@@ -96,16 +110,20 @@ strings):
      implicitly;
    - `end` would fall on or after midnight (a window cannot cross midnight);
    - `[start, end)` overlaps the configured ToU window.
-4. Otherwise the four H/M registers of the chosen direction in slot 3 are written
-   through the guard, **one register at a time, in this order**: start hour,
-   start minute, end hour, end minute. The other direction's window is asserted
-   empty. Then the state document is refreshed (existing command path).
+4. Otherwise **all eight** H/M registers of slot 3 go through the guard, one
+   register at a time. The **unused direction is cleared first**: its four
+   registers are written to zero before the four registers of the direction
+   carrying the window. Within a direction the order is always start hour,
+   start minute, end hour, end minute. Then the state document is refreshed
+   (existing command path).
 
-**Selecting `Off`** clears slot 3 immediately (same ordering).
+**Selecting `Off`** clears slot 3 immediately (same eight registers, same order).
 
-**Expiry:** any poll where `now ≥ end` clears slot 3. The inverter stops the
-window at `end` by itself; clearing only prevents the window firing again
-tomorrow, so lagging by up to one poll interval is acceptable and documented.
+**Expiry:** any poll where `now ≥ end` clears the window that ended — that
+direction's four registers only, never the other direction's. The inverter stops
+the window at `end` by itself; clearing only prevents the window firing again
+tomorrow, so lagging by up to one poll interval is acceptable and documented. An
+`end` of `00:00` means end-of-day and resolves to the next midnight.
 
 **Why that write order.** Writes take effect immediately and there is no
 multi-register write in the stack (sidecar is fc06-only), so a window is set
@@ -113,6 +131,16 @@ one word at a time. Writing start before end makes the one-second transient
 either a same-direction superset of the target (on set: `14:07→00:00` before
 the end lands) or an already-past window (on clear: `00:00→14:30` after 14:30).
 Neither transient can charge or discharge in the wrong direction.
+
+The **block order follows the desired slot**, for the boost writes and the
+reconcile alike (`inverter.TimedSlotWriteRegisters`): **the unused direction is
+always cleared first**. A direction whose desired window is unset is written
+before a direction whose window is set; when both are unset (a clear) or both
+are set, the charge block comes first. So a boost replacing one in the opposite
+direction zeroes the old window before programming the new one, and slot 3 never
+transits the both-windows-set state — a state the inverter has never been probed
+in. Only registers whose value differs are written, so the zeros of a direction
+that is already empty cost no fc06.
 
 **Never written:** the slot leading pairs `43151`/`43152` and `43161`/`43162`
 (unconfirmed meaning; currents are global). Only offsets `+2..+9` of a slot.
@@ -131,12 +159,54 @@ After every successful poll, when controls are enabled:
    read value, `Guard`-write it (read → compare → write → re-read). Equal
    values cost nothing: the guard skips them with no fc06 (REQ-HA-10), so the
    steady state is **zero writes per poll**.
-3. Log one line per reconcile that wrote anything (`schedule: reconciled`,
-   registers old→new); log nothing when nothing changed.
-4. A reconcile error is non-fatal (warn, retry next poll), exactly like RTC
-   auto-sync.
+3. Log one line per reconcile that wrote anything (`schedule reconciled`); log
+   nothing when nothing changed. The guard logs each register it skips or writes.
+4. A reconcile error is non-fatal (`schedule reconcile failed` at warn, retry
+   next poll), exactly like RTC auto-sync.
 
 The reconcile never touches `43110`, `43141`, `43142` or the leading pairs.
+
+`Reconcile` pre-filters the registers whose desired value differs before handing
+them to the guard, so a schedule already in the desired shape issues **no Modbus
+traffic at all** — not even the guard's own read.
+
+The reconcile hangs off the poll **after** the state publish, the same place as
+the RTC auto-sync: a poll that fails to publish (broker down) returns early and
+reconciles nothing that cycle. The schedule is re-asserted on the first poll that
+publishes again, and because the desired schedule is derived afresh from the
+registers each time, a skipped cycle leaves nothing stale behind.
+
+**Partial writes.** A slot is written one register at a time by any of the three
+write paths — the boost command, the reconcile, and the RTC sync — all of which
+share `writeRegisters` (`internal/controls`), so a transport failure can stop any
+of them mid-sequence, not only "the same command". Each register whose guard
+failed without a confirmed write (a re-read that did not confirm is left alone,
+the write having landed) is retried **once**, in the original order, after the
+pass; one retry only, no sleep, still under the same API mutex the caller already
+holds. Such a failure does not prove the fc06 never reached the inverter — the
+write can land and only the reply be lost — but the retry is safe regardless: it
+goes through the full read-before-write guard again, which re-reads first and
+skips a register that already holds the desired value, so a retry after a landed
+write costs no extra flash wear.
+
+Whatever still differs after the retry is healed by the next poll's reconcile,
+which — judging expiry per direction — clears only a remnant whose window has
+*ended*. A remnant that still *reads as running* is not healed there: a lost
+end-hour write leaving, say, `00:00→14:00` in place of the intended `14:00→14:30`
+still satisfies `now < end`, so it is adopted as the boost under the
+unexpired-window rule (see *Design*) rather than cleared. The in-command retry
+above is therefore the only defence against that case; together the retry and
+the reconcile are why a boost survives a one-off sidecar timeout instead of
+being left stuck on a stale window or wiped on the following poll.
+
+**A poll whose setpoints read failed also skips the reconcile**, like a publish
+failure. The state reader reuses the last-known setpoints when the setpoints
+sub-read fails (so the published control state is never blanked), which means the
+slots handed to the reconcile can be a whole poll interval old. Diffing against
+them would let the manager act on a slot it never read — clearing a window the
+owner set from the Solis app since the last good read, say. The reconcile
+therefore runs only on cycles whose setpoints came from the inverter; a skipped
+cycle is logged at debug and the next successful read re-asserts the schedule.
 
 ## Work-mode controls reshaped (`REQ-HA-15`)
 
@@ -144,9 +214,11 @@ The reconcile never touches `43110`, `43141`, `43142` or the leading pairs.
   `switch.optimal_income`. Same key, same guarded read‑modify‑write of **bit 1
   only** (35 ↔ 33, REQ-HA-09), state derived from `43110` (`Run` when bit 1 set).
   Commands other than the two option strings are logged and dropped (REQ-HA-12).
-- On startup the publisher sends **one empty retained payload** to the old
-  switch discovery topic (`<prefix>/switch/<device>/optimal_income/config`) so
-  HA removes the stale switch entity; this is idempotent.
+- `PublishDiscoveryRemovals` sends **one empty retained payload** to the old
+  switch discovery topic (`<prefix>/switch/<serial>_optimal_income/config`) so
+  HA removes the stale switch entity. It runs after every `PublishDiscovery` —
+  startup and each reconnect — is ungated by `CONTROLS_ENABLED`, and is
+  idempotent.
 - `sensor.work_mode` keeps its key and diagnostic category, is renamed
   **"Energy storage mode"**, and reports `Self Use` when bit 0 is set. Any bit
   combination outside the observed values falls back to the existing flag-list
@@ -158,37 +230,54 @@ The reconcile never touches `43110`, `43141`, `43142` or the leading pairs.
 field. The payload adds `options`, `state_topic: ~/state`,
 `value_template: {{ value_json.<key> }}` and (with `Command: true`)
 `command_topic: ~/<key>/set`. Command entities remain omitted when
-`CONTROLS_ENABLED=false`. Entity counts after B2: 36 sensors, 41 entities
-(the switch becomes a select, `boost_select` is added).
+`CONTROLS_ENABLED=false`. Entity counts after B2: 36 read-only entities and five
+command entities — 41 in all, the catalogue ending `…, optimal_income` (select),
+`boost_select` (select), `rtc_sync`.
 
 ## Package layout
 
-- `internal/schedule` (pure): `ParseToUWindow`, `Desired(tou, slots, now)`,
-  `PlanBoost(mode, minutes, now, tou)` (snap + rejection rules),
-  `Expired(slots, now)`, `BoostSelectState(slots)`.
-- `internal/inverter`: `TimedSlotWriteRegisters(i, slot) []Register` — the
-  ordered addr/value list for one slot, modelled on `RTCWriteRegisters`.
-- `internal/controls`: command keys `boost_select` and `optimal_income` (select
-  payloads); `Reconciler` (one-method interface, sibling of `RTCSyncer`) with
-  the guarded per-register loop; nil-interface wiring when controls are off.
-- `internal/scheduler`: calls the reconciler after each poll, under the same
-  mutex as commands.
-- `internal/homeassistant`: `Select` component, the two selects, renamed
-  sensor, `State.BoostSelect *string`.
-- `internal/config`: `TOU_WINDOW`.
+- `internal/schedule` (pure): `ParseToUWindow(s) (window, enabled, err)`,
+  `ToUSlots(tou) [2]TimedSlot` (the midnight split), `Desired(tou, assertToU,
+  slots, now)` (slot-3 expiry per direction), `BoostOptions()`,
+  `ParseBoostOption(s)`,
+  `PlanBoost(mode, minutes, now, tou, assertToU)` (snap + rejection rules,
+  returning `ErrCrossesMidnight` / `ErrOverlapsToU`), `BoostSelectState(slots)`.
+- `internal/inverter`: `Register{Addr, Value}` (`RTCRegister` is an alias of it),
+  `TimedSlotWriteRegisters(i, slot) []Register` — the eight ordered addr/value
+  pairs for one slot's offsets `+2..+9`, modelled on `RTCWriteRegisters` — and
+  `ParseClock`.
+- `internal/controls`: `WithToU(window, assert)` on the handler; command keys
+  `boost_select` (`setBoost`) and `optimal_income` (`parseRunStop`);
+  `writeRegisters`, the one guarded per-register loop shared by the RTC sync,
+  the boost writes and the reconcile, retrying once each register the transport
+  lost; `(*Handler).Reconcile(ctx, slots)` in
+  `reconcile.go`, logging under the key `reconcile`.
+- `internal/scheduler`: defines the `Reconciler` interface it consumes (a
+  sibling of `RTCSyncer`, satisfied by `*controls.Handler`), takes it as the
+  sixth argument of `New`, and calls `maybeReconcile` right after
+  `maybeSyncRTC`, under the same mutex as commands. A nil interface — controls
+  off — makes it a no-op.
+- `internal/homeassistant`: `Select` component with `Options`, the two selects,
+  `DiscoveryTopic(component, key)` and `BuildDiscoveryRemovals()`, the renamed
+  `work_mode` sensor, `State.BoostSelect *string` (`boost_select`).
+- `internal/publisher`: `PublishDiscoveryRemovals(ctx)`.
+- `internal/config`: `TOU_WINDOW`, read with `os.LookupEnv` so an explicitly
+  empty value disables ToU assertion while an unset variable takes the default.
 
 ## Testing
 
 - **Unit** (`internal/schedule`): quarter-hour snap for all four `:NN` offsets ×
   4 durations; midnight and ToU-overlap rejections; `Desired` for crossing and
-  non-crossing windows and for `TOU_WINDOW=`; expiry; select-state mapping
+  non-crossing windows and for `TOU_WINDOW=`; per-direction expiry (a stale
+  window beside a running one, both stale, both running); select-state mapping
   including the `null` case. `TimedSlotWriteRegisters` order.
 - **godog** (`features/schedule_controls.feature`): a boost writes exactly the
   four registers in order and each is confirmed by re-read; `Off` clears; an
   expired slot is cleared on poll; ToU drift is re-asserted and an equal ToU
   produces `no holding register is written`; a boost while Optimal Income is
-  Stop is rejected with no write; `optimal_income` `Run`/`Stop` flips bit 1
-  only; the retained state carries `boost_select`.
+  Stop is rejected with no write; a partially cleared slot is healed with one
+  write rather than wiped; `optimal_income` `Run`/`Stop` flips bit 1 only; the
+  retained state carries `boost_select`.
 - **Live smoke (exit criterion):** one 15-min boost lands on the correct
   quarter-hour and the sensors follow; after the end the next poll clears slot
   3; the ToU window is restored after an app-side edit; steady-state polls issue

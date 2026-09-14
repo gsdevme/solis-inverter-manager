@@ -2,6 +2,7 @@ package homeassistant
 
 import (
 	"encoding/json"
+	"reflect"
 	"testing"
 )
 
@@ -206,8 +207,8 @@ func TestDiscoveryControlsDisabledByDefault(t *testing.T) {
 			t.Errorf("%s should not carry command_topic when controls are disabled", topic)
 		}
 	}
-	for _, key := range []string{"set_charge_current", "set_discharge_current", "optimal_income", "rtc_sync"} {
-		for _, comp := range []string{"number", "switch", "button"} {
+	for _, key := range []string{"set_charge_current", "set_discharge_current", "optimal_income", "boost_select", "rtc_sync"} {
+		for _, comp := range []string{"number", "switch", "select", "button"} {
 			topic := "homeassistant/" + comp + "/1234567890_" + key + "/config"
 			if _, present := byTopic[topic]; present {
 				t.Errorf("command entity %q should not be published when controls are disabled", key)
@@ -216,14 +217,14 @@ func TestDiscoveryControlsDisabledByDefault(t *testing.T) {
 	}
 }
 
-// TestDiscoveryControlsEnabled verifies the four command entities and their
+// TestDiscoveryControlsEnabled verifies the five command entities and their
 // component-specific discovery keys when ControlsEnabled is true.
 func TestDiscoveryControlsEnabled(t *testing.T) {
 	c := testConfig()
 	c.ControlsEnabled = true
 	byTopic := mustBuildDiscoveryFor(t, c)
-	if len(byTopic) != 40 {
-		t.Fatalf("got %d discovery messages, want 40", len(byTopic))
+	if len(byTopic) != 41 {
+		t.Fatalf("got %d discovery messages, want 41", len(byTopic))
 	}
 
 	num := byTopic["homeassistant/number/1234567890_set_charge_current/config"]
@@ -251,24 +252,30 @@ func TestDiscoveryControlsEnabled(t *testing.T) {
 		t.Errorf("set_discharge_current command_topic = %v", dis["command_topic"])
 	}
 
-	sw := byTopic["homeassistant/switch/1234567890_optimal_income/config"]
-	if sw == nil {
-		t.Fatal("missing optimal_income switch")
+	sel := byTopic["homeassistant/select/1234567890_optimal_income/config"]
+	if sel == nil {
+		t.Fatal("missing optimal_income select")
 	}
-	if sw["command_topic"] != "~/optimal_income/set" {
-		t.Errorf("switch command_topic = %v", sw["command_topic"])
+	if sel["command_topic"] != "~/optimal_income/set" {
+		t.Errorf("select command_topic = %v", sel["command_topic"])
 	}
-	if sw["payload_on"] != "ON" || sw["payload_off"] != "OFF" {
-		t.Errorf("payload_on/off = %v / %v", sw["payload_on"], sw["payload_off"])
+	if got := optionsOf(t, sel); !reflect.DeepEqual(got, []string{"Run", "Stop"}) {
+		t.Errorf("optimal_income options = %v, want [Run Stop]", got)
 	}
-	if sw["state_on"] != "ON" || sw["state_off"] != "OFF" {
-		t.Errorf("state_on/off = %v / %v", sw["state_on"], sw["state_off"])
+	if sel["value_template"] != "{{ value_json.optimal_income }}" {
+		t.Errorf("select value_template = %v", sel["value_template"])
 	}
-	if sw["value_template"] != "{{ value_json.optimal_income }}" {
-		t.Errorf("switch value_template = %v", sw["value_template"])
+	if sel["state_topic"] != "~/state" {
+		t.Errorf("select state_topic = %v", sel["state_topic"])
 	}
-	if sw["state_topic"] != "~/state" {
-		t.Errorf("switch state_topic = %v", sw["state_topic"])
+	// A select is not a switch: the on/off payload keys must be gone entirely.
+	for _, absent := range []string{"payload_on", "payload_off", "state_on", "state_off"} {
+		if _, present := sel[absent]; present {
+			t.Errorf("optimal_income select should not carry %s, got %v", absent, sel[absent])
+		}
+	}
+	if _, present := byTopic["homeassistant/switch/1234567890_optimal_income/config"]; present {
+		t.Error("optimal_income must no longer be published as a switch")
 	}
 
 	btn := byTopic["homeassistant/button/1234567890_rtc_sync/config"]
@@ -293,5 +300,100 @@ func TestDiscoveryControlsEnabled(t *testing.T) {
 	// Button keeps the shared device/availability block.
 	if btn["availability_topic"] != "~/availability" || btn["device"] == nil {
 		t.Errorf("button availability/device = %v / %v", btn["availability_topic"], btn["device"])
+	}
+}
+
+// optionsOf reads a select payload's options array back as strings.
+func optionsOf(t *testing.T, p map[string]any) []string {
+	t.Helper()
+	raw, ok := p["options"].([]any)
+	if !ok {
+		t.Fatalf("options = %v, want an array of strings", p["options"])
+	}
+	out := make([]string, 0, len(raw))
+	for _, v := range raw {
+		s, ok := v.(string)
+		if !ok {
+			t.Fatalf("option %v is not a string", v)
+		}
+		out = append(out, s)
+	}
+	return out
+}
+
+// TestDiscoveryBoostSelect covers the boost select: the nine schedule options in
+// display order, reading its state from the shared state document.
+func TestDiscoveryBoostSelect(t *testing.T) {
+	c := testConfig()
+	c.ControlsEnabled = true
+	byTopic := mustBuildDiscoveryFor(t, c)
+
+	p := byTopic["homeassistant/select/1234567890_boost_select/config"]
+	if p == nil {
+		t.Fatal("missing boost_select select")
+	}
+	if p["name"] != "Boost" {
+		t.Errorf("name = %v, want Boost", p["name"])
+	}
+	if p["command_topic"] != "~/boost_select/set" {
+		t.Errorf("command_topic = %v", p["command_topic"])
+	}
+	if p["state_topic"] != "~/state" {
+		t.Errorf("state_topic = %v", p["state_topic"])
+	}
+	if p["value_template"] != "{{ value_json.boost_select }}" {
+		t.Errorf("value_template = %v", p["value_template"])
+	}
+	want := []string{
+		"Off",
+		"Charge 15 min", "Charge 30 min", "Charge 45 min", "Charge 60 min",
+		"Discharge 15 min", "Discharge 30 min", "Discharge 45 min", "Discharge 60 min",
+	}
+	if got := optionsOf(t, p); !reflect.DeepEqual(got, want) {
+		t.Errorf("boost_select options = %v, want %v", got, want)
+	}
+}
+
+// TestDiscoveryTopic pins the topic helper to the shape every discovery message
+// and every removal uses.
+func TestDiscoveryTopic(t *testing.T) {
+	got := testConfig().DiscoveryTopic(Select, "boost_select")
+	if want := "homeassistant/select/1234567890_boost_select/config"; got != want {
+		t.Errorf("DiscoveryTopic = %q, want %q", got, want)
+	}
+}
+
+// TestBuildDiscoveryRemovals covers the stale-entity cleanup: one empty retained
+// payload to the retired switch's config topic, emitted whether or not controls
+// are enabled.
+func TestBuildDiscoveryRemovals(t *testing.T) {
+	for _, controls := range []bool{false, true} {
+		c := testConfig()
+		c.ControlsEnabled = controls
+		msgs := c.BuildDiscoveryRemovals()
+		if len(msgs) != 1 {
+			t.Fatalf("ControlsEnabled=%v: got %d removals, want 1", controls, len(msgs))
+		}
+		if want := "homeassistant/switch/1234567890_optimal_income/config"; msgs[0].Topic != want {
+			t.Errorf("removal topic = %q, want %q", msgs[0].Topic, want)
+		}
+		if len(msgs[0].Payload) != 0 {
+			t.Errorf("removal payload = %q, want empty", msgs[0].Payload)
+		}
+	}
+}
+
+// TestDiscoveryWorkModeRenamed pins the B2 rename: the work_mode sensor keeps its
+// key and diagnostic category but presents as "Energy storage mode".
+func TestDiscoveryWorkModeRenamed(t *testing.T) {
+	p := mustBuildDiscovery(t)["homeassistant/sensor/1234567890_work_mode/config"]
+	if p == nil {
+		t.Fatal("missing work_mode sensor")
+	}
+	if p["name"] != "Energy storage mode" {
+		t.Errorf("work_mode name = %v, want Energy storage mode", p["name"])
+	}
+	if p["entity_category"] != "diagnostic" {
+		t.Errorf("work_mode entity_category = %v", p["entity_category"])
 	}
 }

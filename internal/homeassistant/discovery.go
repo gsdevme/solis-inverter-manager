@@ -29,10 +29,27 @@ func (c Config) BuildDiscovery() ([]Message, error) {
 		if err != nil {
 			return nil, fmt.Errorf("marshal discovery for %s: %w", e.Key, err)
 		}
-		topic := fmt.Sprintf("%s/%s/%s_%s/config", c.DiscoveryPrefix, e.Component, c.Serial, e.Key)
-		msgs = append(msgs, Message{Topic: topic, Payload: body})
+		msgs = append(msgs, Message{Topic: c.DiscoveryTopic(e.Component, e.Key), Payload: body})
 	}
 	return msgs, nil
+}
+
+// DiscoveryTopic is the config topic for one component/key pair:
+// <DiscoveryPrefix>/<component>/<Serial>_<key>/config.
+func (c Config) DiscoveryTopic(component, key string) string {
+	return fmt.Sprintf("%s/%s/%s_%s/config", c.DiscoveryPrefix, component, c.Serial, key)
+}
+
+// BuildDiscoveryRemovals returns the discovery topics of entities this version no
+// longer publishes, each with an empty payload: clearing a retained discovery
+// config is how Home Assistant is told to delete the entity. Publishing them is
+// idempotent, so it is safe on every discovery pass, and it is not gated on
+// ControlsEnabled — a stale entity must go either way.
+//
+// The only removal is switch.optimal_income, replaced in B2 by a select on the
+// same key (docs/specs/09-schedule-controls.md, REQ-HA-15).
+func (c Config) BuildDiscoveryRemovals() []Message {
+	return []Message{{Topic: c.DiscoveryTopic(Switch, "optimal_income"), Payload: []byte{}}}
 }
 
 // buildEntityPayload assembles the discovery JSON for one entity. Only the `~`
@@ -75,12 +92,18 @@ func (c Config) buildEntityPayload(e Entity, device map[string]any) map[string]a
 		} else {
 			p["value_template"] = fmt.Sprintf("{{ 'ON' if value_json.%s else 'OFF' }}", e.Key)
 		}
+	// Unused by the current Solis catalogue, which publishes no switch entity;
+	// kept for parity with the shape.
 	case Switch:
 		p["state_topic"] = "~/state"
 		p["payload_on"] = e.PayloadOn
 		p["payload_off"] = e.PayloadOff
 		p["state_on"] = e.StateOn
 		p["state_off"] = e.StateOff
+		p["value_template"] = fmt.Sprintf("{{ value_json.%s }}", e.Key)
+	case Select:
+		p["state_topic"] = "~/state"
+		p["options"] = e.Options
 		p["value_template"] = fmt.Sprintf("{{ value_json.%s }}", e.Key)
 	case Number:
 		p["state_topic"] = "~/state"

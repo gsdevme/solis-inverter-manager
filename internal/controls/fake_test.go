@@ -31,7 +31,10 @@ type inputCall struct {
 // zero-filled slices for unseeded addresses. WriteHolding mutates regs so a
 // subsequent re-read observes the written value, unless overrideReread pins the
 // re-read result (to exercise a confirm mismatch). readErr / writeErr inject
-// failures.
+// failures across every address; failReadOnce and failRead inject a read failure
+// at one address, the first consumed by the first read of that address (the
+// one-off sidecar timeout the live defect hit) and the second standing for every
+// read of it.
 type fakeRW struct {
 	regs           map[int]uint16
 	holdCalls      []holdCall
@@ -39,6 +42,8 @@ type fakeRW struct {
 	inputCalls     []inputCall
 	readErr        error
 	writeErr       error
+	failReadOnce   map[int]error
+	failRead       map[int]error
 	overrideReread *uint16
 	shortHolding   bool
 }
@@ -51,6 +56,13 @@ func (f *fakeRW) ReadHolding(_ context.Context, addr, count int) ([]uint16, erro
 	f.holdCalls = append(f.holdCalls, holdCall{addr: addr, count: count})
 	if f.readErr != nil {
 		return nil, f.readErr
+	}
+	if err, ok := f.failReadOnce[addr]; ok {
+		delete(f.failReadOnce, addr)
+		return nil, err
+	}
+	if err, ok := f.failRead[addr]; ok {
+		return nil, err
 	}
 	if f.shortHolding {
 		return []uint16{}, nil
@@ -84,6 +96,17 @@ func (f *fakeRW) ReadInput(_ context.Context, addr, count int) ([]uint16, error)
 		out[i] = f.regs[addr+i]
 	}
 	return out, nil
+}
+
+// readsOf counts the ReadHolding calls that targeted addr exactly.
+func (f *fakeRW) readsOf(addr int) int {
+	n := 0
+	for _, c := range f.holdCalls {
+		if c.addr == addr {
+			n++
+		}
+	}
+	return n
 }
 
 // wroteTo reports whether any WriteHolding hit addr.

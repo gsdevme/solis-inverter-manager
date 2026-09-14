@@ -53,8 +53,9 @@ payload shapes and the 36-entity table.
 - **REQ-HA-02** State: a single **retained**, QoS-1 JSON document at `<base>/state`;
   every entity reads it via `value_template {{ value_json.<key> }}` (binary_sensor
   via `{{ 'ON' if value_json.<key> else 'OFF' }}`); the state DTO's json tags are
-  the 36 read-only entity keys plus the three control-readback fields
-  (`set_charge_current`, `set_discharge_current`, `optimal_income`) — 39 tags.
+  the 36 read-only entity keys plus the four control-readback fields
+  (`set_charge_current`, `set_discharge_current`, `optimal_income`,
+  `boost_select`) — 40 tags.
   `rtc` is RFC3339; `rtc_drift` is seconds.
   → `homeassistant/state.go`, `homeassistant/entities.go`
 - **REQ-HA-03** Entity classes per the `03` table; **daily** energy counters use
@@ -72,7 +73,7 @@ payload shapes and the 36-entity table.
   `live` requires it; `mock` without a broker runs the same `Collect` unit and logs
   decoded telemetry. Poll cadence = `POLL_INTERVAL` (default 60s), driven by the
   Phase-6 scheduler (`REQ-SC-01`). → `cmd/serve.go`, `config.go`
-- **REQ-HA-07** Read-only in Phase 4; writable controls (`number`/`switch`/`select`)
+- **REQ-HA-07** Read-only in Phase 4; writable controls (`number`/`select`/`button`)
   and the **READ-BEFORE-WRITE write-guard** on every setpoint (flash-wear avoidance)
   are **Phase 5** — see the CRITICAL write-guard section in
   [`03-mqtt-ha-discovery.md`](03-mqtt-ha-discovery.md). → `publisher/*` (Phase 5)
@@ -85,9 +86,10 @@ See the write-path sections of
   `set_discharge_current` (`43142`), HA `number`, 0–60 A step 0.1, U16 `÷10` A,
   written via fc06 behind the READ-BEFORE-WRITE guard.
   → `internal/homeassistant`, `internal/controls`
-- **REQ-HA-09** Optimal-income switch (`"ON"`/`"OFF"`): **read-modify-write that
-  flips ONLY bit 1** of `43110` (RegWorkMode), preserving all other bits (`33`↔`35`
-  on this unit). → `internal/controls`, `internal/inverter`
+- **REQ-HA-09** Optimal-income control (`select.optimal_income`, `Run`/`Stop` —
+  see REQ-HA-15): **read-modify-write that flips ONLY bit 1** of `43110`
+  (RegWorkMode), preserving all other bits (`33`↔`35` on this unit).
+  → `internal/controls`, `internal/inverter`
 - **REQ-HA-10** **READ-BEFORE-WRITE guard** on every write: read → compare →
   write-if-differs (fc06) → re-read to confirm; **desired == current is skipped
   with no fc06 and logged at `info`**; a mismatched re-read is a logged, non-fatal
@@ -100,16 +102,21 @@ See the write-path sections of
   write); any successfully-parsed **finite** float is **clamped to 0–60 A**
   (`ClampHAChargeAmps`) and written under the guard — **no value is rejected for
   being out of range**, only for failing to parse (matches
-  `EncodeAmps(ClampHAChargeAmps(parse))`). Switch rejects anything not
-  `"ON"`/`"OFF"`; bad commands **logged and dropped** (never crash).
+  `EncodeAmps(ClampHAChargeAmps(parse))`). A select accepts only its own options
+  (space trimmed): `optimal_income` `Run`/`Stop` (case-insensitive),
+  `boost_select` one of its nine option strings exactly; bad commands **logged
+  and dropped** (never crash).
   → `internal/controls`
 - **REQ-HA-13** Manual **"Sync RTC now" button** (`rtc_sync`): guarded per-register
   write of the six RTC holding registers `43000–43005` to the current local
-  datetime. Periodic/threshold-gated **auto-sync** is now available (Phase 6),
+  datetime, via the shared guarded loop (`writeRegisters`) that retries a
+  transport-failed register once — see `09-schedule-controls.md` **Partial
+  writes**. Periodic/threshold-gated **auto-sync** is now available (Phase 6),
   **opt-in** via `RTC_SYNC_ENABLED` and folded into the poll — see `REQ-SC-06`.
-  Kill-switch `CONTROLS_ENABLED` (default true); **Ruling R1** — when false, the four
+  Kill-switch `CONTROLS_ENABLED` (default true); **Ruling R1** — when false, the five
   command entities are **omitted from discovery**, the command topic is not
-  subscribed, and RTC auto-sync is disabled (it needs the write path).
+  subscribed, and both the schedule reconcile (REQ-HA-17) and RTC auto-sync are
+  disabled (they need the write path).
   → `internal/homeassistant`, `internal/controls`, `internal/scheduler`
 - **REQ-HA-14** Derived schedule sensors `tou_window`, `boost`, `boost_ends_at`:
   read-only in B1 (no writes). The setpoint holding read grows to 61 registers
@@ -129,29 +136,45 @@ See the write-path sections of
 - **REQ-HA-15** Work-mode controls use the Solis app's vocabulary (`09-schedule-controls.md`):
   `select.optimal_income` with options `Run`/`Stop` **replaces** the on/off switch —
   same key, same guarded read-modify-write of bit 1 only (35 ↔ 33), state derived
-  from `43110`; the publisher sends one empty retained payload to the old switch
-  discovery topic so HA drops it. `sensor.work_mode` is renamed "Energy storage
-  mode" and shows `Self Use` (bit 0), falling back to the flag list for unobserved
-  values. A writable storage-mode dropdown is deferred until the other modes are
-  probed. → `internal/homeassistant/entities.go`, `state.go`, `internal/controls/handler.go`
+  from `43110`; `Config.BuildDiscoveryRemovals` names the old
+  `switch.optimal_income` discovery topic and `publisher.PublishDiscoveryRemovals`
+  clears it with one empty retained payload after every discovery publish
+  (startup and each reconnect, ungated by `CONTROLS_ENABLED`) so HA drops the
+  stale entity. `sensor.work_mode` is renamed "Energy storage mode" and shows
+  `Self Use` (bit 0), falling back to the flag list for unobserved values. A
+  writable storage-mode dropdown is deferred until the other modes are probed.
+  → `internal/homeassistant/entities.go`, `state.go`, `discovery.go`,
+  `internal/publisher`, `internal/controls/handler.go`
 - **REQ-HA-16** `select.boost_select` (options `Off`, `Charge|Discharge 15|30|45|60 min`)
   programs slot 3: start = now truncated to the minute, end = the N-th quarter-hour
   boundary strictly after now (N = minutes/15). Rejected with a warning and no write
   when Optimal Income is `Stop`, the window would reach midnight, or it overlaps the
-  ToU window. Written through the guard one register at a time in the order start
-  hour, start minute, end hour, end minute; the other direction's window is asserted
-  empty; `Off` clears slot 3 at once. Only offsets `+2..+9` of a slot are ever written
-  (never `43151/43152`, `43161/43162`). State `boost_select` is derived from slot 3
+  ToU window. All eight slot registers go through the guard one at a time; the
+  unused direction is asserted empty and is always cleared first, the charge block
+  leading only when both directions are unset or both are set; each block is
+  written in the order start hour, start minute, end hour, end minute; `Off` clears
+  slot 3 at once. Only offsets `+2..+9` of a slot are ever written (never
+  `43151/43152`, `43161/43162`). State `boost_select` is derived from slot 3
   (`Off`, the matching option via `15·⌈minutes/15⌉`, or `null` when unmappable).
-  → `internal/schedule`, `internal/inverter/schedule.go`, `internal/controls`
+  → `schedule.BoostOptions`/`ParseBoostOption`/`PlanBoost`/`BoostSelectState`,
+  `inverter.TimedSlotWriteRegisters`, `controls.Handler.setBoost`
 - **REQ-HA-17** Manager-owned schedule reconcile after every poll when controls are
   enabled: slots 1–2 are asserted to `TOU_WINDOW` split at midnight (discharge windows
   empty; skipped entirely when `TOU_WINDOW` is empty) and an expired slot-3 boost
-  (`now ≥ end`) is cleared. Only registers that differ are written (guarded), so the
+  (`now ≥ end`) is cleared. Slot-3 expiry is judged **per direction** — each window
+  is kept while it runs and cleared once it has ended — so a slot left holding the
+  remnant of a partly written command is healed rather than wiped along with the
+  window still running. Only registers that differ are written (guarded), so the
   steady state issues no fc06; one log line per reconcile that wrote; errors are
   non-fatal and retried next poll. App-side slot edits are reverted within one poll
   (an unexpired slot-3 window is adopted). The reconcile never touches `43110`,
-  `43141`, `43142` or the slot leading pairs. → `internal/controls`, `internal/scheduler`
+  `43141`, `43142` or the slot leading pairs. It runs from the poll, after the
+  state publish, so a poll that fails to publish (broker down) reconciles
+  nothing that cycle; a poll whose setpoints read failed — and therefore reused
+  the cached slots — skips the reconcile the same way, so the manager never acts
+  on a slot the cycle did not read. → `controls.Handler.Reconcile`,
+  `scheduler.Reconciler` (the consumer-defined interface `Scheduler.maybeReconcile`
+  calls), gated by `cmd.setpointFreshness`
 
 ## Scheduling (`internal/scheduler`, `04-polling-scheduling.md`)
 
@@ -197,8 +220,11 @@ health-driven readiness.
   `RTC_DRIFT_THRESHOLD` (Go duration, default `60s`, must be `> 0`). Redacted-safe and
   logged like the rest of the config. → `config.go`, `.env.dist`, `scheduler/*`
 - **REQ-CF-07** `TOU_WINDOW` (`HH:MM-HH:MM`, local time, default `23:30-05:30`; may cross
-  midnight; empty disables ToU assertion; anything else fails validation). Gated by
-  `CONTROLS_ENABLED` like every write. → `config.go`, `.env.dist`, `09-schedule-controls.md`
+  midnight; anything else fails validation). Read with `os.LookupEnv`, so an
+  explicitly empty value disables ToU assertion while an unset variable takes the
+  default. Gated by `CONTROLS_ENABLED` like every write; set with controls off,
+  it logs a startup warning. → `config.go`, `schedule.ParseToUWindow`, `.env.dist`,
+  `09-schedule-controls.md`
 
 ## Lifecycle & health (`internal/server`, `cmd`, `main.go`, `06-lifecycle-health.md`)
 

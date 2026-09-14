@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -42,6 +43,12 @@ func (r *stubReader) ReadInput(_ context.Context, addr, count int) ([]uint16, er
 	return regs, nil
 }
 
+// write is one recorded fc06: the address and the value written to it.
+type write struct {
+	addr  int
+	value uint16
+}
+
 // fakeHRW is a programmable, recording controls.HoldingReadWriter for the controls
 // scenarios. regs maps absolute holding-register address to its current value;
 // reads return zero-filled slices for unseeded addresses. WriteHolding mutates
@@ -49,11 +56,8 @@ func (r *stubReader) ReadInput(_ context.Context, addr, count int) ([]uint16, er
 // every write and count-1 read so the steps can assert the guard's behaviour.
 type fakeHRW struct {
 	regs       map[int]uint16
-	writeCalls []struct {
-		addr  int
-		value uint16
-	}
-	reads1 []int // addresses of every count==1 ReadHolding
+	writeCalls []write
+	reads1     []int // addresses of every count==1 ReadHolding
 }
 
 func newFakeHRW() *fakeHRW { return &fakeHRW{regs: map[int]uint16{}} }
@@ -70,10 +74,7 @@ func (f *fakeHRW) ReadHolding(_ context.Context, addr, count int) ([]uint16, err
 }
 
 func (f *fakeHRW) WriteHolding(_ context.Context, addr int, value uint16) error {
-	f.writeCalls = append(f.writeCalls, struct {
-		addr  int
-		value uint16
-	}{addr, value})
+	f.writeCalls = append(f.writeCalls, write{addr, value})
 	f.regs[addr] = value
 	return nil
 }
@@ -136,6 +137,10 @@ type world struct {
 	hrw     *fakeHRW
 	handler *controls.Handler
 	sp      homeassistant.Setpoints
+	// now and tou are the handler's fixed clock and TOU_WINDOW setting, kept so a
+	// scenario can rebuild the handler at another instant over the same bank.
+	now time.Time
+	tou string
 
 	sched   *scheduler.Scheduler
 	sreader *pollingReader
@@ -151,6 +156,8 @@ func (w *world) reset() {
 	w.hrw = nil
 	w.handler = nil
 	w.sp = homeassistant.Setpoints{}
+	w.now = time.Time{}
+	w.tou = ""
 	w.sched = nil
 	w.sreader = nil
 }
@@ -337,9 +344,72 @@ func (w *world) controlsHandler() error {
 	return nil
 }
 
+// controlsHandlerAt wires a controls.Handler over a fresh fake holding bank whose
+// clock is pinned to the given RFC3339 instant and whose Time-of-Use tariff is the
+// given TOU_WINDOW setting, so boost planning and reconcile expiry are
+// deterministic. The bank starts empty, so a scenario seeds its registers after
+// this step, not before.
+func (w *world) controlsHandlerAt(at, tou string) error {
+	now, err := parseInstant(at)
+	if err != nil {
+		return err
+	}
+	w.hrw = newFakeHRW()
+	return w.buildHandler(now, tou)
+}
+
+// buildHandler points a new handler at the bank the world already holds. The clock
+// and the tariff are fixed at construction, so a scenario reconciling at another
+// instant rebuilds rather than reseeding — the registers it seeded survive.
+func (w *world) buildHandler(now time.Time, tou string) error {
+	window, assert, err := schedule.ParseToUWindow(tou)
+	if err != nil {
+		return err
+	}
+	w.now, w.tou = now, tou
+	w.handler = controls.NewHandler(w.hrw, quietLogger(), true, nil,
+		controls.WithNow(func() time.Time { return now }),
+		controls.WithToU(window, assert),
+	)
+	return nil
+}
+
+// parseInstant parses a step's RFC3339 timestamp, naming the offending text so a
+// typo in a feature file reads as a step error rather than a zero clock.
+func parseInstant(at string) (time.Time, error) {
+	t, err := time.Parse(time.RFC3339, at)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("parse %q as RFC3339: %w", at, err)
+	}
+	return t, nil
+}
+
 func (w *world) holdingReads(addr, value int) error {
 	w.hrw.regs[addr] = uint16(value)
 	return nil
+}
+
+// scheduleReconciled runs one post-poll reconcile against the fake bank at the
+// given instant, reading the slots first exactly as the scheduler does. When the
+// instant differs from the handler's fixed clock the handler is rebuilt over the
+// same bank, since the clock cannot be changed after construction.
+func (w *world) scheduleReconciled(at string) error {
+	now, err := parseInstant(at)
+	if err != nil {
+		return err
+	}
+	if !now.Equal(w.now) {
+		if err := w.buildHandler(now, w.tou); err != nil {
+			return err
+		}
+	}
+	ctx := context.Background()
+	sp, err := controls.ReadSetpoints(ctx, w.hrw)
+	if err != nil {
+		return err
+	}
+	_, err = w.handler.Reconcile(ctx, sp.Slots)
+	return err
 }
 
 // commandArrives delivers one command to the handler on the conventional
@@ -361,6 +431,75 @@ func (w *world) writtenOnce(addr, want int) error {
 	return nil
 }
 
+// writtenInOrder asserts the recorded writes are exactly one per register across
+// the inclusive address range, in ascending address order, carrying the
+// comma-separated values. It is the ordered-write contract a timed slot depends
+// on: start hour, start minute, end hour, end minute, and no other fc06.
+func (w *world) writtenInOrder(lo, hi int, values string) error {
+	fields := strings.Split(values, ",")
+	if len(fields) != hi-lo+1 {
+		return fmt.Errorf("step lists %d values for registers %d to %d, want %d", len(fields), lo, hi, hi-lo+1)
+	}
+	want := make([]write, 0, len(fields))
+	for i, field := range fields {
+		value, err := parseRegisterValue(field)
+		if err != nil {
+			return err
+		}
+		want = append(want, write{addr: lo + i, value: value})
+	}
+	return w.writesAre(want)
+}
+
+// writePairsInOrder asserts the exact ordered write sequence from a list of
+// "addr=value" pairs, for the sequences whose addresses are not contiguous — a
+// Time-of-Use window re-asserted across its midnight split touches one register in
+// each of two slots.
+func (w *world) writePairsInOrder(pairs string) error {
+	var want []write
+	for _, pair := range strings.Split(pairs, ",") {
+		addrText, valueText, found := strings.Cut(pair, "=")
+		if !found {
+			return fmt.Errorf("write %q is not addr=value", pair)
+		}
+		addr, err := strconv.Atoi(strings.TrimSpace(addrText))
+		if err != nil {
+			return fmt.Errorf("write %q: address: %w", pair, err)
+		}
+		value, err := parseRegisterValue(valueText)
+		if err != nil {
+			return fmt.Errorf("write %q: %w", pair, err)
+		}
+		want = append(want, write{addr: addr, value: value})
+	}
+	return w.writesAre(want)
+}
+
+// writesAre asserts the recorded fc06 calls are exactly want: same length, same
+// order, same addresses and values. An extra or missing write fails, so a
+// scenario pins the whole write sequence rather than a count.
+func (w *world) writesAre(want []write) error {
+	got := w.hrw.writeCalls
+	if len(got) != len(want) {
+		return fmt.Errorf("writeCalls = %v, want exactly %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			return fmt.Errorf("write %d = {addr:%d value:%d}, want {addr:%d value:%d}", i, got[i].addr, got[i].value, want[i].addr, want[i].value)
+		}
+	}
+	return nil
+}
+
+// parseRegisterValue parses one unsigned 16-bit register value from a step list.
+func parseRegisterValue(text string) (uint16, error) {
+	value, err := strconv.ParseUint(strings.TrimSpace(text), 10, 16)
+	if err != nil {
+		return 0, fmt.Errorf("value %q is not a register value: %w", strings.TrimSpace(text), err)
+	}
+	return uint16(value), nil
+}
+
 func (w *world) noWrites() error {
 	if len(w.hrw.writeCalls) != 0 {
 		return fmt.Errorf("writeCalls = %v, want ZERO (no fc06)", w.hrw.writeCalls)
@@ -368,27 +507,50 @@ func (w *world) noWrites() error {
 	return nil
 }
 
-// writeConfirmed asserts the last write landed in the register bank and that the
-// guard re-read that register (current read + confirming re-read).
+// writeConfirmed asserts the last write was confirmed, for the single-write
+// command scenarios.
 func (w *world) writeConfirmed() error {
 	if len(w.hrw.writeCalls) == 0 {
 		return fmt.Errorf("no write to confirm")
 	}
-	last := w.hrw.writeCalls[len(w.hrw.writeCalls)-1]
-	if w.hrw.regs[last.addr] != last.value {
-		return fmt.Errorf("register %d = %d after write, want %d", last.addr, w.hrw.regs[last.addr], last.value)
+	return w.confirmed(w.hrw.writeCalls[len(w.hrw.writeCalls)-1])
+}
+
+// everyWriteConfirmed asserts that every recorded write was confirmed, not just
+// the last. A multi-register sequence such as a boost slot must pass the guard
+// register by register, so a confirming re-read skipped on an interior register
+// has to fail the scenario.
+func (w *world) everyWriteConfirmed() error {
+	if len(w.hrw.writeCalls) == 0 {
+		return fmt.Errorf("no write to confirm")
 	}
-	if n := w.hrw.reads1Count(last.addr); n < 2 {
-		return fmt.Errorf("register %d had %d single-register reads, want >=2 (current + confirming re-read)", last.addr, n)
+	for _, got := range w.hrw.writeCalls {
+		if err := w.confirmed(got); err != nil {
+			return err
+		}
 	}
 	return nil
 }
 
+// confirmed asserts one write landed in the register bank and that the guard
+// re-read that register (current read + confirming re-read).
+func (w *world) confirmed(got write) error {
+	if w.hrw.regs[got.addr] != got.value {
+		return fmt.Errorf("register %d = %d after write, want %d", got.addr, w.hrw.regs[got.addr], got.value)
+	}
+	if n := w.hrw.reads1Count(got.addr); n < 2 {
+		return fmt.Errorf("register %d had %d single-register reads, want >=2 (current + confirming re-read)", got.addr, n)
+	}
+	return nil
+}
+
+// controlsRead seeds the setpoints the state document mirrors, from the Optimal
+// Income select's two options.
 func (w *world) controlsRead(charge, discharge float64, optimal string) error {
 	w.sp = homeassistant.Setpoints{
 		SetChargeCurrent:    charge,
 		SetDischargeCurrent: discharge,
-		OptimalIncome:       strings.EqualFold(optimal, "ON"),
+		OptimalIncome:       optimal == "Run",
 	}
 	return nil
 }
@@ -485,7 +647,7 @@ func (w *world) resilientScheduler(failN, threshold int) error {
 	w.stat = server.New(server.Config{FailureThreshold: threshold})
 	w.srv = httptest.NewServer(w.stat.Handler())
 	w.sreader = &pollingReader{failN: failN, soc: 47}
-	w.sched = scheduler.New(w.sreader, &nopPublisher{}, w.stat, nil, nil, scheduler.Config{
+	w.sched = scheduler.New(w.sreader, &nopPublisher{}, w.stat, nil, nil, nil, scheduler.Config{
 		PollInterval: time.Minute,
 		MaxRetries:   3,
 		Logger:       quietLogger(),
@@ -548,15 +710,20 @@ func TestFeatures(t *testing.T) {
 			ctx.Step(`^a retained "(online|offline)" message is published at the availability topic$`, w.retainedAvailability)
 
 			ctx.Step(`^a controls handler over a fake inverter holding-register bank$`, w.controlsHandler)
+			ctx.Step(`^a controls handler over a fake inverter holding-register bank with the clock at (\S+) and TOU window "([^"]*)"$`, w.controlsHandlerAt)
 			ctx.Step(`^holding register (\d+) currently reads (\d+)$`, w.holdingReads)
 			ctx.Step(`^an? "([^"]*)" command arrives with payload "([^"]*)"$`, w.commandArrives)
+			ctx.Step(`^the schedule is reconciled at (\S+)$`, w.scheduleReconciled)
 			ctx.Step(`^holding register (\d+) is written once with (\d+)$`, w.writtenOnce)
+			ctx.Step(`^holding registers (\d+) to (\d+) are written in order with "([^"]*)"$`, w.writtenInOrder)
+			ctx.Step(`^the holding registers written in order are "([^"]*)"$`, w.writePairsInOrder)
 			ctx.Step(`^no holding register is written$`, w.noWrites)
 			ctx.Step(`^the write is confirmed by a re-read$`, w.writeConfirmed)
-			ctx.Step(`^the writable controls read charge ([-\d.]+) A, discharge ([-\d.]+) A, optimal income (ON|OFF)$`, w.controlsRead)
+			ctx.Step(`^every write is confirmed by a re-read$`, w.everyWriteConfirmed)
+			ctx.Step(`^the writable controls read charge ([-\d.]+) A, discharge ([-\d.]+) A, optimal income (Run|Stop)$`, w.controlsRead)
 			ctx.Step(`^a poll is collected and state is published with those setpoints$`, w.stateWithSetpoints)
 			ctx.Step(`^the state document reports (set_charge_current|set_discharge_current) as ([-\d.]+)$`, w.stateReportsNumber)
-			ctx.Step(`^the state document reports (optimal_income|tou_window|boost|boost_ends_at) as "([^"]*)"$`, w.stateReportsString)
+			ctx.Step(`^the state document reports (optimal_income|tou_window|boost_select|boost_ends_at|boost) as "([^"]*)"$`, w.stateReportsString)
 
 			ctx.Step(`^the setpoints are read from the holding bank at (\S+)$`, w.setpointsReadAt)
 			ctx.Step(`^the state document reports (\w+) as null$`, w.stateReportsNull)

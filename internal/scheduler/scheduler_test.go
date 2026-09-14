@@ -14,13 +14,15 @@ import (
 
 // fakeReader returns a telemetry snapshot, failing the first failFirstN reads with
 // a transient error. rtcTime, when set, is folded into the returned telemetry so
-// the RTC-drift tests can control measured drift.
+// the RTC-drift tests can control measured drift; slots is returned as the
+// setpoints' timed schedule so the reconcile tests can control what a poll read.
 type fakeReader struct {
 	mu         sync.Mutex
 	calls      int
 	failFirstN int
 	soc        float64
 	rtcTime    time.Time
+	slots      inverter.TimedSlots
 }
 
 func (r *fakeReader) Read(context.Context) (inverter.Telemetry, homeassistant.Setpoints, error) {
@@ -32,13 +34,16 @@ func (r *fakeReader) Read(context.Context) (inverter.Telemetry, homeassistant.Se
 	}
 	tel := inverter.Telemetry{Time: r.rtcTime}
 	tel.Battery.SOCPercent = r.soc
-	return tel, homeassistant.Setpoints{SetChargeCurrent: r.soc}, nil
+	return tel, homeassistant.Setpoints{SetChargeCurrent: r.soc, Slots: r.slots}, nil
 }
 
+// fakePublisher records published telemetry and returns a configurable error so a
+// broker failure can be simulated.
 type fakePublisher struct {
 	mu    sync.Mutex
 	count int
 	last  inverter.Telemetry
+	err   error
 }
 
 func (p *fakePublisher) PublishState(_ context.Context, tel inverter.Telemetry, _ homeassistant.Setpoints) error {
@@ -46,7 +51,7 @@ func (p *fakePublisher) PublishState(_ context.Context, tel inverter.Telemetry, 
 	defer p.mu.Unlock()
 	p.count++
 	p.last = tel
-	return nil
+	return p.err
 }
 
 func (p *fakePublisher) publishCount() int {
@@ -103,7 +108,7 @@ func TestImmediatePollPublishes(t *testing.T) {
 		r := &fakeReader{soc: 62}
 		p := &fakePublisher{}
 		h := &fakeHealth{}
-		s := New(r, p, h, nil, nil, baseConfig())
+		s := New(r, p, h, nil, nil, nil, baseConfig())
 
 		ctx, cancel := context.WithCancel(context.Background())
 		done := make(chan struct{})
@@ -126,7 +131,7 @@ func TestTransientRetrySucceeds(t *testing.T) {
 		r := &fakeReader{soc: 62, failFirstN: 2} // first 2 reads fail, then succeed
 		p := &fakePublisher{}
 		h := &fakeHealth{}
-		s := New(r, p, h, nil, nil, baseConfig())
+		s := New(r, p, h, nil, nil, nil, baseConfig())
 
 		ctx, cancel := context.WithCancel(context.Background())
 		done := make(chan struct{})
@@ -160,7 +165,7 @@ func TestPersistentFailureMarksFailure(t *testing.T) {
 	h := &fakeHealth{}
 	cfg := baseConfig()
 	cfg.MaxRetries = 0
-	s := New(r, p, h, nil, nil, cfg)
+	s := New(r, p, h, nil, nil, nil, cfg)
 
 	s.PollNow(context.Background())
 
@@ -183,7 +188,7 @@ func TestRetainedCacheViaLastState(t *testing.T) {
 	h := &fakeHealth{}
 	cfg := baseConfig()
 	cfg.MaxRetries = 0
-	s := New(r, p, h, nil, nil, cfg)
+	s := New(r, p, h, nil, nil, nil, cfg)
 
 	// A successful poll fills the cache.
 	s.PollNow(context.Background())
@@ -215,7 +220,7 @@ func rtcSchedulerFor(t *testing.T, enabled bool, threshold, drift time.Duration)
 	cfg.RTCSyncEnabled = enabled
 	cfg.RTCDriftThreshold = threshold
 	cfg.Now = func() time.Time { return now }
-	s := New(r, &fakePublisher{}, &fakeHealth{}, rtc, nil, cfg)
+	s := New(r, &fakePublisher{}, &fakeHealth{}, rtc, nil, nil, cfg)
 	return s, rtc
 }
 
@@ -268,7 +273,7 @@ func (c *fakeCommander) Apply(_ context.Context, topic string, _ []byte) {
 
 func TestApplyCommandRoutes(t *testing.T) {
 	c := &fakeCommander{}
-	s := New(&fakeReader{}, &fakePublisher{}, &fakeHealth{}, nil, c, baseConfig())
+	s := New(&fakeReader{}, &fakePublisher{}, &fakeHealth{}, nil, c, nil, baseConfig())
 	s.ApplyCommand(context.Background(), "solis/cmd/set_charge_current/set", []byte("5"))
 
 	c.mu.Lock()
@@ -279,7 +284,107 @@ func TestApplyCommandRoutes(t *testing.T) {
 }
 
 func TestApplyCommandNilCommanderIsNoop(t *testing.T) {
-	s := New(&fakeReader{}, &fakePublisher{}, &fakeHealth{}, nil, nil, baseConfig())
+	s := New(&fakeReader{}, &fakePublisher{}, &fakeHealth{}, nil, nil, nil, baseConfig())
 	// Must not panic when controls are disabled (nil commander).
 	s.ApplyCommand(context.Background(), "solis/cmd/set_charge_current/set", []byte("5"))
+}
+
+// fakeReconciler records the slots handed to it and returns a configurable
+// (wrote, err).
+type fakeReconciler struct {
+	mu    sync.Mutex
+	calls int
+	slots inverter.TimedSlots
+	wrote bool
+	err   error
+}
+
+func (r *fakeReconciler) Reconcile(_ context.Context, slots inverter.TimedSlots) (bool, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.calls++
+	r.slots = slots
+	return r.wrote, r.err
+}
+
+func (r *fakeReconciler) observed() (int, inverter.TimedSlots) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.calls, r.slots
+}
+
+// polledSlots is a distinctive schedule the fake reader reports, so a test can
+// tell the reconciled slots came from this poll's read.
+func polledSlots() inverter.TimedSlots {
+	return inverter.TimedSlots{{Charge: inverter.TimedWindow{
+		Start: inverter.Clock{Hour: 23, Minute: 30},
+		End:   inverter.Clock{Hour: 0, Minute: 0},
+	}}}
+}
+
+// reconcileSchedulerFor builds a scheduler polling a reader that reports
+// polledSlots, with the given reconciler and publisher behaviour.
+func reconcileSchedulerFor(t *testing.T, rec Reconciler, pubErr error) (*Scheduler, *fakeHealth) {
+	t.Helper()
+	cfg := baseConfig()
+	cfg.MaxRetries = 0
+	h := &fakeHealth{}
+	s := New(&fakeReader{soc: 40, slots: polledSlots()}, &fakePublisher{err: pubErr}, h, nil, nil, rec, cfg)
+	return s, h
+}
+
+func TestReconcileReceivesThePolledSlots(t *testing.T) {
+	rec := &fakeReconciler{wrote: true}
+	s, _ := reconcileSchedulerFor(t, rec, nil)
+
+	s.PollNow(context.Background())
+
+	calls, slots := rec.observed()
+	if calls != 1 {
+		t.Fatalf("Reconcile calls = %d, want 1 per successful poll", calls)
+	}
+	if slots != polledSlots() {
+		t.Fatalf("Reconcile slots = %+v, want the slots the poll read %+v", slots, polledSlots())
+	}
+}
+
+func TestReconcileSkippedWhenPublishFails(t *testing.T) {
+	// A publish failure ends the poll early: the schedule is not reconciled off a
+	// cycle that never reached a healthy state.
+	rec := &fakeReconciler{}
+	s, h := reconcileSchedulerFor(t, rec, errors.New("broker down"))
+
+	s.PollNow(context.Background())
+
+	if calls, _ := rec.observed(); calls != 0 {
+		t.Fatalf("Reconcile calls = %d, want 0 when the publish failed", calls)
+	}
+	if succ, fail := h.counts(); succ != 0 || fail != 1 {
+		t.Fatalf("health = (success %d, failure %d), want (0, 1)", succ, fail)
+	}
+}
+
+func TestReconcileErrorDoesNotFailThePoll(t *testing.T) {
+	rec := &fakeReconciler{err: errors.New("write refused")}
+	s, h := reconcileSchedulerFor(t, rec, nil)
+
+	s.PollNow(context.Background())
+
+	if calls, _ := rec.observed(); calls != 1 {
+		t.Fatalf("Reconcile calls = %d, want 1", calls)
+	}
+	if succ, fail := h.counts(); succ != 1 || fail != 0 {
+		t.Fatalf("health = (success %d, failure %d), want (1, 0): a reconcile error is non-fatal", succ, fail)
+	}
+}
+
+func TestReconcileNilIsNoop(t *testing.T) {
+	// Controls disabled: the poll must still succeed without a reconciler.
+	s, h := reconcileSchedulerFor(t, nil, nil)
+
+	s.PollNow(context.Background())
+
+	if succ, fail := h.counts(); succ != 1 || fail != 0 {
+		t.Fatalf("health = (success %d, failure %d), want (1, 0)", succ, fail)
+	}
 }

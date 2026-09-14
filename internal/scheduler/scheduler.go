@@ -18,6 +18,11 @@
 // (post-sync drift ≈ 0) and respects the flash-wear guardrail via the read-before-
 // write guard. See docs/specs/04-polling-scheduling.md.
 //
+// The declarative schedule reconcile is folded in the same way: after a successful
+// publish, the timed slots the poll just read are asserted against the desired
+// schedule, so the steady state costs no extra Modbus frames and only differing
+// registers are written.
+//
 // Now and After are injectable so testing/synctest can drive the loop on a fake
 // clock.
 package scheduler
@@ -59,6 +64,14 @@ type RTCSyncer interface {
 	SyncRTC(ctx context.Context) (bool, error)
 }
 
+// Reconciler asserts the desired timed schedule against the slots a poll just
+// read, guard-writing only registers that differ. It reports whether any register
+// was written and the first error, if any. May be nil when controls are disabled
+// (the reconcile is then a no-op).
+type Reconciler interface {
+	Reconcile(ctx context.Context, slots inverter.TimedSlots) (bool, error)
+}
+
 // Commander routes one inbound MQTT command (route → guarded write → refresh).
 // Implemented by *controls.Handler.Apply. May be nil when controls are disabled.
 type Commander interface {
@@ -84,11 +97,12 @@ type Config struct {
 
 // Scheduler owns the poll loop, the last-good state cache and command serialisation.
 type Scheduler struct {
-	reader    StateReader
-	publisher StatePublisher
-	health    HealthReporter
-	rtc       RTCSyncer
-	commander Commander
+	reader     StateReader
+	publisher  StatePublisher
+	health     HealthReporter
+	rtc        RTCSyncer
+	commander  Commander
+	reconciler Reconciler
 
 	cfg    Config
 	logger *slog.Logger
@@ -108,10 +122,10 @@ type Scheduler struct {
 	have    bool
 }
 
-// New builds a Scheduler, defaulting the clock seams and clamping MaxRetries. rtc
-// and commander may be nil (controls disabled): auto-sync and ApplyCommand then
-// become no-ops.
-func New(reader StateReader, pub StatePublisher, health HealthReporter, rtc RTCSyncer, commander Commander, cfg Config) *Scheduler {
+// New builds a Scheduler, defaulting the clock seams and clamping MaxRetries. rtc,
+// commander and reconciler may be nil (controls disabled): auto-sync,
+// ApplyCommand and the per-poll schedule reconcile then become no-ops.
+func New(reader StateReader, pub StatePublisher, health HealthReporter, rtc RTCSyncer, commander Commander, reconciler Reconciler, cfg Config) *Scheduler {
 	if cfg.Logger == nil {
 		cfg.Logger = slog.Default()
 	}
@@ -125,7 +139,8 @@ func New(reader StateReader, pub StatePublisher, health HealthReporter, rtc RTCS
 		cfg.MaxRetries = 0
 	}
 	return &Scheduler{
-		reader: reader, publisher: pub, health: health, rtc: rtc, commander: commander,
+		reader: reader, publisher: pub, health: health,
+		rtc: rtc, commander: commander, reconciler: reconciler,
 		cfg: cfg, logger: cfg.Logger, now: cfg.Now, after: cfg.After,
 	}
 }
@@ -152,8 +167,8 @@ func (s *Scheduler) Run(ctx context.Context) {
 func (s *Scheduler) PollNow(ctx context.Context) { s.poll(ctx) }
 
 // poll performs one read (with backoff) + cache + publish, updates health, then
-// runs opt-in RTC auto-sync. The whole cycle holds apiMu so it never overlaps a
-// command or another poll.
+// runs opt-in RTC auto-sync and the declarative schedule reconcile. The whole
+// cycle holds apiMu so it never overlaps a command or another poll.
 func (s *Scheduler) poll(ctx context.Context) {
 	s.apiMu.Lock()
 	defer s.apiMu.Unlock()
@@ -179,6 +194,7 @@ func (s *Scheduler) poll(ctx context.Context) {
 	s.health.MarkSuccess()
 
 	s.maybeSyncRTC(ctx, tel)
+	s.maybeReconcile(ctx, sp.Slots)
 }
 
 // maybeSyncRTC runs the guarded RTC write when auto-sync is enabled and the decoded
@@ -199,6 +215,24 @@ func (s *Scheduler) maybeSyncRTC(ctx context.Context, tel inverter.Telemetry) {
 	}
 	if wrote {
 		s.logger.InfoContext(ctx, "rtc auto-synced", "drift", drift, "threshold", s.cfg.RTCDriftThreshold)
+	}
+}
+
+// maybeReconcile asserts the desired timed schedule against the slots this poll
+// read, so the steady-state reconcile costs no extra Modbus frames. It runs under
+// apiMu (poll holds it) so its guarded writes never overlap another sidecar frame.
+// A reconcile failure is non-fatal: telemetry is already published and healthy.
+func (s *Scheduler) maybeReconcile(ctx context.Context, slots inverter.TimedSlots) {
+	if s.reconciler == nil {
+		return
+	}
+	wrote, err := s.reconciler.Reconcile(ctx, slots)
+	if err != nil {
+		s.logger.WarnContext(ctx, "schedule reconcile failed", "err", err)
+		return
+	}
+	if wrote {
+		s.logger.InfoContext(ctx, "schedule reconciled")
 	}
 }
 

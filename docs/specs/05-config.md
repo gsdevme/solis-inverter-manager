@@ -23,6 +23,8 @@ holds real secrets.
 | `FAILURE_THRESHOLD` | `3` | no | Consecutive poll failures before `/readyz` flips not-ready. Must be `>= 1`. |
 | `RTC_SYNC_ENABLED` | `false` | no | Opt-in periodic RTC auto-sync folded into the poll. When `true`, a poll whose decoded clock drifts by more than `RTC_DRIFT_THRESHOLD` runs the guarded `43000–43005` write. |
 | `RTC_DRIFT_THRESHOLD` | `60s` | no | Absolute clock-drift threshold above which RTC auto-sync writes (`time.ParseDuration`). Must be `> 0`. Only consulted when `RTC_SYNC_ENABLED=true`. |
+| `CONTROLS_ENABLED` | `true` | no | Kill switch (Ruling R1): when `false`, no command entities are discovered, no command subscription, no reconcile — fully read-only. |
+| `TOU_WINDOW` | `23:30-05:30` | no | `HH:MM-HH:MM`, local time. Crossing midnight is allowed and is the normal case. Empty string disables ToU assertion (slots 1–2 are left untouched). Invalid values fail config validation (`errors.Join`). |
 | `MQTT_BROKER_URL` | — | if `live` | e.g. `mqtt://mosquitto:1883` or `tls://host:8883`. |
 | `MQTT_USERNAME` | — | no | MQTT auth username. |
 | `MQTT_PASSWORD` | — | no | MQTT auth password. **Secret — never logged.** |
@@ -42,6 +44,8 @@ holds real secrets.
 - `POLL_INTERVAL` below the `5s` floor is rejected; `INVERTER_PORT` in `1–65535`;
   `INVERTER_SOCKET_TIMEOUT > 0`; `FAILURE_THRESHOLD >= 1`; `POLL_MAX_RETRIES >= 0`;
   `RTC_DRIFT_THRESHOLD > 0`.
+- `TOU_WINDOW` must be empty or parse as `HH:MM-HH:MM` (`schedule.ParseToUWindow`);
+  an unparseable value fails validation naming `TOU_WINDOW`.
 - **Secrets** (`INVERTER_SERIAL`, `MQTT_PASSWORD`) are never logged: the config's
   `String()` and `LogValue()` replace them with a redaction placeholder.
 
