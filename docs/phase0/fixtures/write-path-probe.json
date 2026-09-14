@@ -1,0 +1,30 @@
+[
+  [
+    "baseline_43141",
+    350
+  ],
+  [
+    "noop_write_ack",
+    350
+  ],
+  [
+    "after_noop_read",
+    350
+  ],
+  [
+    "after_write_340_immediate",
+    340
+  ],
+  [
+    "after_write_340_plus_130s",
+    340
+  ],
+  [
+    "after_restore_read",
+    350
+  ],
+  [
+    "restore_ok",
+    true
+  ]
+]

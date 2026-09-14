@@ -1,0 +1,56 @@
+# Full local stack for development and the live-smoke: MQTT broker + thin Python
+# sidecar + Go manager, wired over the compose network. Defaults to MODE=mock
+# end-to-end (via .env.dist) so
+#   cp .env.dist .env && docker compose up
+# needs no inverter hardware — the sidecar serves canned Phase 0 fixtures and the
+# manager polls it and publishes Home Assistant discovery + state to the broker.
+#
+#   docker compose up                                  # mqtt + sidecar(mock) + manager
+#   docker compose exec mqtt mosquitto_sub -t '#' -v   # watch discovery + state
+#   docker compose down
+#
+# For a live run, point the sidecar at the real datalogger in .env: set MODE=live
+# plus INVERTER_IP / INVERTER_SERIAL. Only the sidecar opens the :8899 Modbus
+# socket; the manager reaches the inverter solely via SIDECAR_URL.
+services:
+  # Dev/test broker only: anonymous, no persistence. NOT a production broker.
+  mqtt:
+    image: eclipse-mosquitto:2
+    container_name: solis-mqtt
+    ports:
+      - "1883:1883"
+    volumes:
+      - ./deploy/mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+
+  # Thin Solarman V5 transport. MODE comes from .env (mock by default); it serves
+  # the in-memory fixture map so the stack runs with no hardware.
+  sidecar:
+    build:
+      context: .
+      dockerfile: sidecar/Dockerfile
+    container_name: solis-sidecar
+    env_file:
+      - .env
+    ports:
+      - "8081:8081"
+
+  # Go orchestrator. Reads telemetry from the sidecar, republishes to MQTT with HA
+  # autodiscovery, and exposes /healthz + /readyz on 8080.
+  manager:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: solis-manager
+    env_file:
+      - .env
+    environment:
+      # Service-to-service wiring on the compose network — overrides the localhost
+      # defaults in .env (which target a same-host sidecar/broker for `go run`).
+      SIDECAR_URL: http://sidecar:8081
+      MQTT_BROKER_URL: mqtt://mqtt:1883
+      HEALTH_ADDR: ":8080"
+    ports:
+      - "8080:8080"
+    depends_on:
+      - mqtt
+      - sidecar

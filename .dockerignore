@@ -1,6 +1,7 @@
-infrastructure
+bin/
+.git
 .github
-__pycache__
+.claude
 .env
-README.md
-Makefile
+*.md
+__pycache__

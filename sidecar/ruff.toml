@@ -1,0 +1,4 @@
+# Lint config scoped to the sidecar package (the legacy 2023 monolith at the
+# repo root is untouched by Phase 2 and deleted in Phase 3).
+target-version = "py312"
+line-length = 100
