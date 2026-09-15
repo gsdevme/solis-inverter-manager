@@ -1,5 +1,17 @@
 # Changelog
 
+## [2.4.0](https://github.com/gsdevme/solis-inverter-manager/compare/v2.3.1...v2.4.0) (2026-09-15)
+
+
+### Features
+
+* **inverter:** publish BMS and inverter current limits ([7203edb](https://github.com/gsdevme/solis-inverter-manager/commit/7203edba9d8473c558252cc23f4c754506be2b3d))
+
+
+### Bug Fixes
+
+* **sidecar:** seed the mock from complementary fixtures ([ae11256](https://github.com/gsdevme/solis-inverter-manager/commit/ae1125638e5e68737de75cd5db4fcc2d96499c8b))
+
 ## [2.3.1](https://github.com/gsdevme/solis-inverter-manager/compare/v2.3.0...v2.3.1) (2026-09-15)
 
 
