@@ -168,18 +168,43 @@ func (c *Client) Health(ctx context.Context) (Health, error) {
 	return h, nil
 }
 
+// probeServing issues a bare GET /health and reports whether the sidecar
+// answered with a 200. The body is deliberately NOT decoded: REQ-LC-11 ends the
+// startup wait on any 200, so a sidecar whose /health body is malformed — or not
+// JSON at all — still counts as serving. Health is not reused here precisely
+// because it must keep its stricter decoding contract for InverterReachable.
+func (c *Client) probeServing(ctx context.Context) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/health", nil)
+	if err != nil {
+		return fmt.Errorf("build request: %w", err)
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return fmt.Errorf("http GET /health: %w", err)
+	}
+	defer func() {
+		_, _ = io.Copy(io.Discard, resp.Body)
+		_ = resp.Body.Close()
+	}()
+	if resp.StatusCode != http.StatusOK {
+		return parseError(resp)
+	}
+	return nil
+}
+
 // WaitUntilServing blocks until the sidecar's HTTP listener answers /health,
 // retrying every interval until then. It exists because the two-container pod
 // starts the manager before the sidecar, so the first register call would
 // otherwise fail with a connection refused.
 //
-// Any successful /health response ends the wait: InverterReachable is
-// deliberately ignored, because the sidecar answering at all is what this waits
-// for — inverter reachability is the poll loop's and /readyz's concern. When ctx
-// ends first the last health error is returned wrapped with ctx.Err().
+// Any 200 ends the wait, whatever the body: the response is never decoded and
+// InverterReachable is deliberately ignored, because the sidecar answering at
+// all is what this waits for — inverter reachability is the poll loop's and
+// /readyz's concern. When ctx ends first the last probe error is returned
+// wrapped with ctx.Err().
 func (c *Client) WaitUntilServing(ctx context.Context, every time.Duration) error {
 	for {
-		_, lastErr := c.Health(ctx)
+		lastErr := c.probeServing(ctx)
 		if lastErr == nil {
 			return nil
 		}

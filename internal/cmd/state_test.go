@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gsdevme/solis-inverter-manager/internal/config"
 	"github.com/gsdevme/solis-inverter-manager/internal/homeassistant"
 	"github.com/gsdevme/solis-inverter-manager/internal/inverter"
 	"github.com/gsdevme/solis-inverter-manager/internal/publisher"
@@ -213,5 +214,66 @@ func TestStatePublisherWithoutAService(t *testing.T) {
 	}
 	if body := f.page(t); !strings.Contains(body, "no readings yet") {
 		t.Errorf("page should have no reading to show:\n%s", body)
+	}
+}
+
+// TestTOUWarningApplies pins REQ-CF-07's startup warning to a TOU_WINDOW the
+// operator actually set. The regression it guards is the first case: the default
+// window is non-empty, so keying the warning off TOUWindow alone warned on every
+// read-only run about a window nobody configured.
+func TestTOUWarningApplies(t *testing.T) {
+	tests := []struct {
+		name string
+		cfg  config.Config
+		want bool
+	}{
+		{
+			name: "unset window with controls off does not warn",
+			cfg:  config.Config{TOUWindow: "23:30-05:30", TOUWindowSet: false, ControlsEnabled: false},
+			want: false,
+		},
+		{
+			name: "set window with controls off warns",
+			cfg:  config.Config{TOUWindow: "22:00-06:00", TOUWindowSet: true, ControlsEnabled: false},
+			want: true,
+		},
+		{
+			name: "set window with controls on does not warn",
+			cfg:  config.Config{TOUWindow: "22:00-06:00", TOUWindowSet: true, ControlsEnabled: true},
+			want: false,
+		},
+		{
+			name: "explicitly empty window does not warn",
+			cfg:  config.Config{TOUWindow: "", TOUWindowSet: true, ControlsEnabled: false},
+			want: false,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := touWarningApplies(&tc.cfg); got != tc.want {
+				t.Errorf("touWarningApplies = %t, want %t", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestHealthExitError pins REQ-LC-08 for the health-error exit branch: a clean
+// http.ErrServerClosed arrives as nil and must exit zero, never as a wrapped
+// "health server: %!w(<nil>)".
+func TestHealthExitError(t *testing.T) {
+	if err := healthExitError(nil); err != nil {
+		t.Errorf("healthExitError(nil) = %v, want nil", err)
+	}
+
+	sentinel := errors.New("listen tcp :8080: address already in use")
+	got := healthExitError(sentinel)
+	if got == nil {
+		t.Fatal("healthExitError(err) = nil, want an error")
+	}
+	if !strings.Contains(got.Error(), "health server") {
+		t.Errorf("error = %v, want it to mention the health server", got)
+	}
+	if !errors.Is(got, sentinel) {
+		t.Errorf("error = %v, want it to wrap the underlying error", got)
 	}
 }
