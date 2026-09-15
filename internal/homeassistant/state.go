@@ -30,6 +30,22 @@ type State struct {
 	BMSCurrent               float64 `json:"bms_current"`
 	BMSChargeCurrentLimit    float64 `json:"bms_charge_current_limit"`
 	BMSDischargeCurrentLimit float64 `json:"bms_discharge_current_limit"`
+	// The raw fault words, published beside one boolean per decoded bit.
+	BMSFault1               uint16 `json:"bms_fault_1"`
+	BMSFault2               uint16 `json:"bms_fault_2"`
+	BMSOverVoltage          bool   `json:"bms_over_voltage"`
+	BMSUnderVoltage         bool   `json:"bms_under_voltage"`
+	BMSOverTemp             bool   `json:"bms_over_temp"`
+	BMSUnderTemp            bool   `json:"bms_under_temp"`
+	BMSChargeOverTemp       bool   `json:"bms_charge_over_temp"`
+	BMSChargeUnderTemp      bool   `json:"bms_charge_under_temp"`
+	BMSDischargeOverCurrent bool   `json:"bms_discharge_over_current"`
+	BMSChargeOverCurrent    bool   `json:"bms_charge_over_current"`
+	BMSInternalProtection   bool   `json:"bms_internal_protection"`
+	BMSModuleUnbalanced     bool   `json:"bms_module_unbalanced"`
+
+	OverdischargeSOC float64 `json:"overdischarge_soc"`
+	ForceChargeSOC   float64 `json:"force_charge_soc"`
 
 	PV1Voltage   float64 `json:"pv1_voltage"`
 	PV1Current   float64 `json:"pv1_current"`
@@ -56,6 +72,7 @@ type State struct {
 	BatteryDischargeToday float64 `json:"battery_discharge_today"`
 
 	Status          uint16  `json:"status"`
+	StatusText      string  `json:"status_text"`
 	OperatingStatus uint16  `json:"operating_status"`
 	WorkMode        string  `json:"work_mode"`
 	RTC             string  `json:"rtc"`
@@ -125,6 +142,22 @@ func (c Config) BuildState(t inverter.Telemetry, drift time.Duration, sp Setpoin
 		BMSChargeCurrentLimit:    t.Battery.BMSChargeCurrentLimitA,
 		BMSDischargeCurrentLimit: t.Battery.BMSDischargeCurrentLimitA,
 
+		BMSFault1:               t.Battery.BMSFault1.Raw,
+		BMSFault2:               t.Battery.BMSFault2.Raw,
+		BMSOverVoltage:          t.Battery.BMSFault1.OverVoltage,
+		BMSUnderVoltage:         t.Battery.BMSFault1.UnderVoltage,
+		BMSOverTemp:             t.Battery.BMSFault1.OverTemp,
+		BMSUnderTemp:            t.Battery.BMSFault1.UnderTemp,
+		BMSChargeOverTemp:       t.Battery.BMSFault1.ChargeOverTemp,
+		BMSChargeUnderTemp:      t.Battery.BMSFault1.ChargeUnderTemp,
+		BMSDischargeOverCurrent: t.Battery.BMSFault1.DischargeOverCurrent,
+		BMSChargeOverCurrent:    t.Battery.BMSFault2.ChargeOverCurrent,
+		BMSInternalProtection:   t.Battery.BMSFault2.BMSInternal,
+		BMSModuleUnbalanced:     t.Battery.BMSFault2.ModuleUnbalanced,
+
+		OverdischargeSOC: t.Battery.OverdischargeSOCPercent,
+		ForceChargeSOC:   t.Battery.ForceChargeSOCPercent,
+
 		PV1Voltage:   t.PV.PV1VoltageV,
 		PV1Current:   t.PV.PV1CurrentA,
 		PV2Voltage:   t.PV.PV2VoltageV,
@@ -150,6 +183,7 @@ func (c Config) BuildState(t inverter.Telemetry, drift time.Duration, sp Setpoin
 		BatteryDischargeToday: t.Energy.BatteryDischargeTodayKWh,
 
 		Status:          t.System.Status,
+		StatusText:      inverter.StatusLabel(t.System.Status),
 		OperatingStatus: t.System.OperatingStatus,
 		WorkMode:        workModeLabel(t.System.WorkMode),
 		RTC:             t.Time.Format(time.RFC3339),

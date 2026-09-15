@@ -12,7 +12,7 @@ The work is split across three packages plus the serve wiring:
 
 - **`internal/homeassistant`** — a **pure payload builder**. It has no I/O and
   never reads the wall clock. `Config` derives the topics; `Entities()` is the
-  stably ordered 47-entity catalogue (42 read-only entities plus the five
+  stably ordered 62-entity catalogue (57 read-only entities plus the five
   command entities, which `BuildDiscovery` skips when controls are disabled);
   `BuildDiscovery()` returns one discovery `Message` per entity; `BuildState()`
   marshals a decoded `inverter.Telemetry` (plus an externally supplied clock
@@ -60,7 +60,7 @@ and `~/availability`, every other key is spelled out in full.
 ## Device block
 
 Every entity carries the **identical** device block, so Home Assistant groups all
-47 entities under one device:
+62 entities under one device:
 
 ```json
 {
@@ -153,9 +153,9 @@ entity in the catalogue always gets a full config.
 ## State document
 
 One retained JSON object at `<base>/state`, built by `BuildState` from
-`internal/homeassistant/state.go`. Its json tags are the 42 read-only entity
+`internal/homeassistant/state.go`. Its json tags are the 57 read-only entity
 keys plus the four control-readback fields (`set_charge_current`,
-`set_discharge_current`, `optimal_income`, `boost_select`) — 46 tags (the
+`set_discharge_current`, `optimal_income`, `boost_select`) — 61 tags (the
 `State` struct is the contract: no entity without a field, no field without an
 entity). Each entity reads its own field via `value_template`:
 
@@ -182,6 +182,24 @@ Value encodings of note:
   `select.optimal_income`'s own state, by contrast, **is** read from holding `43110`
   (via `controls.ReadSetpoints`, which reads `43110`+61 on every poll), so the two
   entities report the same bitfield from different banks.
+- `status_text` is the `33095` status enum rendered through the vendor's display
+  table (`inverter.StatusLabel`, findings.md §"Inverter status enum"), published
+  beside the raw numeric `status`; an unlisted code renders as its hex form
+  (`0xBEEF`) rather than as a guess. This unit reads `3` → `Generating`; a battery
+  problem surfaces as `CAN_Comm_FAIL` (`0x2012`), `Alarm-BMS` (`0x2015`) or
+  `Alarm2-BMS` (`0x2017`).
+- `bms_fault_1` / `bms_fault_2` are the raw `33145`/`33146` fault words as
+  integers, published beside one `problem`-class binary_sensor per decoded bit
+  (`bms_over_voltage` … `bms_module_unbalanced`, booleans). The raw words are kept
+  because the **bit assignments are vendor-documented but unconfirmed live** (both
+  words read 0 in every capture — findings.md ambiguity #15), so a real fault can
+  be reconciled against the vendor table even if a bit is mislabelled.
+- `overdischarge_soc` / `force_charge_soc` are the inverter's own SOC settings
+  mirrored read-only on the input bank (`33213`/`33214`, ×1 %). They carry no
+  `state_class`: near-static configuration, for which long-term statistics would
+  be noise. They also carry no `device_class`: `battery` would make Home Assistant
+  treat the threshold as the device's own remaining charge, so a static 19 % would
+  read as a permanent low-battery alert.
 - `boost_select` is the `select.boost_select` option derived from slot 3 — `Off`,
   one of the eight `Charge|Discharge NN min` options, or JSON `null` for a window
   that matches no option (see `09-schedule-controls.md`).
@@ -191,7 +209,7 @@ Value encodings of note:
 
 ## Entity table
 
-All 42 read-only entities, mirrored row-for-row from
+All 57 read-only entities, mirrored row-for-row from
 `internal/homeassistant/entities.go`; the five command entities that follow them
 in the same catalogue are tabled under *Control entities* below. Blank cells mean
 the field is empty in the code and the key is therefore omitted from that
@@ -211,36 +229,51 @@ entity's discovery payload.
 | 10 | `bms_current` | sensor | current | measurement | A | diagnostic | 1 |
 | 11 | `bms_charge_current_limit` | sensor | current | measurement | A | diagnostic | 1 |
 | 12 | `bms_discharge_current_limit` | sensor | current | measurement | A | diagnostic | 1 |
-| 13 | `pv1_voltage` | sensor | voltage | measurement | V |  | 1 |
-| 14 | `pv1_current` | sensor | current | measurement | A |  | 1 |
-| 15 | `pv2_voltage` | sensor | voltage | measurement | V |  | 1 |
-| 16 | `pv2_current` | sensor | current | measurement | A |  | 1 |
-| 17 | `pv_total_power` | sensor | power | measurement | W |  |  |
-| 18 | `grid_power` | sensor | power | measurement | W |  |  |
-| 19 | `grid_total_import` | sensor | energy | total_increasing | kWh |  |  |
-| 20 | `grid_import_today` | sensor | energy | total | kWh |  | 1 |
-| 21 | `grid_total_export` | sensor | energy | total_increasing | kWh |  |  |
-| 22 | `grid_export_today` | sensor | energy | total | kWh |  | 1 |
-| 23 | `ac_active_power` | sensor | power | measurement | W |  |  |
-| 24 | `inverter_temperature` | sensor | temperature | measurement | °C |  | 1 |
-| 25 | `grid_frequency` | sensor | frequency | measurement | Hz |  | 2 |
-| 26 | `house_load` | sensor | power | measurement | W |  |  |
-| 27 | `generation_today` | sensor | energy | total | kWh |  | 1 |
-| 28 | `generation_yesterday` | sensor | energy |  | kWh | diagnostic | 1 |
-| 29 | `battery_total_charge` | sensor | energy | total_increasing | kWh |  |  |
-| 30 | `battery_charge_today` | sensor | energy | total | kWh |  | 1 |
-| 31 | `battery_total_discharge` | sensor | energy | total_increasing | kWh |  |  |
-| 32 | `battery_discharge_today` | sensor | energy | total | kWh |  | 1 |
-| 33 | `status` | sensor |  |  |  | diagnostic |  |
-| 34 | `operating_status` | sensor |  |  |  | diagnostic |  |
-| 35 | `work_mode` | sensor |  |  |  | diagnostic |  |
-| 36 | `rtc` | sensor | timestamp |  |  | diagnostic |  |
-| 37 | `rtc_drift` | sensor | duration |  | s | diagnostic |  |
-| 38 | `tou_window` | sensor |  |  |  |  |  |
-| 39 | `boost` | sensor |  |  |  |  |  |
-| 40 | `boost_ends_at` | sensor | timestamp |  |  |  |  |
-| 41 | `inverter_max_charge_current` | sensor | current |  | A | diagnostic | 1 |
-| 42 | `inverter_max_discharge_current` | sensor | current |  | A | diagnostic | 1 |
+| 13 | `bms_fault_1` | sensor |  |  |  | diagnostic |  |
+| 14 | `bms_fault_2` | sensor |  |  |  | diagnostic |  |
+| 15 | `bms_over_voltage` | binary_sensor | problem |  |  | diagnostic |  |
+| 16 | `bms_under_voltage` | binary_sensor | problem |  |  | diagnostic |  |
+| 17 | `bms_over_temp` | binary_sensor | problem |  |  | diagnostic |  |
+| 18 | `bms_under_temp` | binary_sensor | problem |  |  | diagnostic |  |
+| 19 | `bms_charge_over_temp` | binary_sensor | problem |  |  | diagnostic |  |
+| 20 | `bms_charge_under_temp` | binary_sensor | problem |  |  | diagnostic |  |
+| 21 | `bms_discharge_over_current` | binary_sensor | problem |  |  | diagnostic |  |
+| 22 | `bms_charge_over_current` | binary_sensor | problem |  |  | diagnostic |  |
+| 23 | `bms_internal_protection` | binary_sensor | problem |  |  | diagnostic |  |
+| 24 | `bms_module_unbalanced` | binary_sensor | problem |  |  | diagnostic |  |
+| 25 | `overdischarge_soc` | sensor |  |  | % | diagnostic |  |
+| 26 | `force_charge_soc` | sensor |  |  | % | diagnostic |  |
+| 27 | `pv1_voltage` | sensor | voltage | measurement | V |  | 1 |
+| 28 | `pv1_current` | sensor | current | measurement | A |  | 1 |
+| 29 | `pv2_voltage` | sensor | voltage | measurement | V |  | 1 |
+| 30 | `pv2_current` | sensor | current | measurement | A |  | 1 |
+| 31 | `pv_total_power` | sensor | power | measurement | W |  |  |
+| 32 | `grid_power` | sensor | power | measurement | W |  |  |
+| 33 | `grid_total_import` | sensor | energy | total_increasing | kWh |  |  |
+| 34 | `grid_import_today` | sensor | energy | total | kWh |  | 1 |
+| 35 | `grid_total_export` | sensor | energy | total_increasing | kWh |  |  |
+| 36 | `grid_export_today` | sensor | energy | total | kWh |  | 1 |
+| 37 | `ac_active_power` | sensor | power | measurement | W |  |  |
+| 38 | `inverter_temperature` | sensor | temperature | measurement | °C |  | 1 |
+| 39 | `grid_frequency` | sensor | frequency | measurement | Hz |  | 2 |
+| 40 | `house_load` | sensor | power | measurement | W |  |  |
+| 41 | `generation_today` | sensor | energy | total | kWh |  | 1 |
+| 42 | `generation_yesterday` | sensor | energy |  | kWh | diagnostic | 1 |
+| 43 | `battery_total_charge` | sensor | energy | total_increasing | kWh |  |  |
+| 44 | `battery_charge_today` | sensor | energy | total | kWh |  | 1 |
+| 45 | `battery_total_discharge` | sensor | energy | total_increasing | kWh |  |  |
+| 46 | `battery_discharge_today` | sensor | energy | total | kWh |  | 1 |
+| 47 | `status` | sensor |  |  |  | diagnostic |  |
+| 48 | `status_text` | sensor |  |  |  | diagnostic |  |
+| 49 | `operating_status` | sensor |  |  |  | diagnostic |  |
+| 50 | `work_mode` | sensor |  |  |  | diagnostic |  |
+| 51 | `rtc` | sensor | timestamp |  |  | diagnostic |  |
+| 52 | `rtc_drift` | sensor | duration |  | s | diagnostic |  |
+| 53 | `tou_window` | sensor |  |  |  |  |  |
+| 54 | `boost` | sensor |  |  |  |  |  |
+| 55 | `boost_ends_at` | sensor | timestamp |  |  |  |  |
+| 56 | `inverter_max_charge_current` | sensor | current |  | A | diagnostic | 1 |
+| 57 | `inverter_max_discharge_current` | sensor | current |  | A | diagnostic | 1 |
 
 Notes:
 - **Three distinct current ceilings.** The catalogue carries three pairs that
@@ -452,7 +485,7 @@ entities in its catalogue; `internal/mqtt` gains command-topic subscription; and
 ### Control entities
 
 Five writable entities join the catalogue (the read-only table above is unchanged
-at 42; with controls enabled the device carries 47). Registers are the Phase 0
+at 57; with controls enabled the device carries 62). Registers are the Phase 0
 confirmed addresses — never invent them.
 
 | Key | Name | Component | Range / payloads | Register | Encoding |
@@ -464,7 +497,7 @@ confirmed addresses — never invent them.
 | `rtc_sync` | Sync RTC now | `button` | press (`payload_press: PRESS`; the handler acts on any payload) | `43000–43005` (RegRTCSet) | U16×6 local datetime; `entity_category: diagnostic`; **stateless** — no `state_topic`/`value_template` |
 
 - **Friendly names are disambiguated from the read-only sensors.** `sensor.boost`
-  (the derived slot-3 configuration, entity #37 above) is named **"Boost"**, so the
+  (the derived slot-3 configuration, entity #54 above) is named **"Boost"**, so the
   writable `select.boost_select` is named **"Boost control"**. Without that the two
   would both surface as *Solis Inverter Boost* in the Home Assistant UI — same device,
   same visible name, one readable and one writable. The **keys are unchanged**
@@ -522,8 +555,8 @@ control's discovery payload therefore sets `state_topic: ~/state`.
 
 The derived schedule sensors `tou_window`, `boost`, and `boost_ends_at` are
 **not** control-readback fields — they carry no command topic and exist
-whether or not `CONTROLS_ENABLED` is set. They are three of the 42 entities in
-the read-only entity table above (rows 38–40), not an addition beyond it; they
+whether or not `CONTROLS_ENABLED` is set. They are three of the 57 entities in
+the read-only entity table above (rows 53–55), not an addition beyond it; they
 are listed here only because they share the same `~/state` document and the
 same extended holding-bank read as the four control fields:
 
@@ -542,7 +575,7 @@ The values come from **one extra holding-bank read per poll**: a single
 `ReadHolding(43110, 61)` — one fc03 frame now covers `43110` through the three
 timed slots at `43141`–`43170`, and `61` registers is well under the
 125-register-per-frame cap (REQ-SD-02). The four control-readback fields above
-extend the `State` DTO without adding entities — the read-only 42-entity table
+extend the `State` DTO without adding entities — the read-only 57-entity table
 is unchanged by them. `BuildState` stays pure — the holding words are decoded
 and passed in, as with `rtc_drift`; `boost_ends_at` alone needs a clock, so it
 is likewise computed by the caller (`serve.go`) rather than by `BuildState`

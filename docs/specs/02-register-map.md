@@ -64,7 +64,7 @@ Live values and cross-checks are in findings.md — not repeated here.
 | 33079·33080 | Inverter AC active power | S32 | ×1 W |
 | 33093 | Inverter temperature | S16 | ÷10 °C |
 | 33094 | Grid frequency | U16 | ÷100 Hz |
-| 33095 | Inverter status | U16 | enum (3 = running) |
+| 33095 | Inverter status | U16 | enum (3 = Generating per the label table); label table in findings.md §"Inverter status enum", published as `status` + `status_text` |
 | 33121 | Operating status | U16 | bitfield (raw for now) |
 | 33130·33131 | Grid power (meter) | S32 | ×1 W (+export/−import) |
 | 33132 | Work-mode read-back | U16 | bitfield — mirrors 43110 (see below) |
@@ -77,6 +77,8 @@ Live values and cross-checks are in findings.md — not repeated here.
 | 33142 | BMS battery current | S16 | ÷10 A |
 | 33143 | BMS charge current limit | U16 | ÷10 A — BMS-advertised ceiling; tapers to 0 as the pack fills |
 | 33144 | BMS discharge current limit | U16 | ÷10 A — BMS-advertised ceiling |
+| 33145 | BMS fault word 1 | U16 | bitfield — bits 1–7 OV / UV / OT / UT / charge-OT / charge-UT / discharge-OC; bit map vendor-documented, unconfirmed live |
+| 33146 | BMS fault word 2 | U16 | bitfield — bits 0 / 3 / 4 charge-OC / BMS-internal / module-unbalanced; bit map vendor-documented, unconfirmed live |
 | 33147 | House load power | U16 | ×1 W |
 | 33149·33150 | Battery power | S32 | ×1 W magnitude; signed from 33135 (+charge/−discharge) |
 | 33161·33162 | Battery total charge energy | U32 | ×1 kWh |
@@ -87,6 +89,8 @@ Live values and cross-checks are in findings.md — not repeated here.
 | 33171 | Grid import today | U16 | ÷10 kWh |
 | 33173·33174 | Grid total export energy | U32 | ×1 kWh |
 | 33175 | Grid export today | U16 | ÷10 kWh |
+| 33213 | Over-discharge SOC | U16 | ×1 % — read-only mirror of holding 43011 |
+| 33214 | Force-charge SOC | U16 | ×1 % — read-only mirror of holding 43018 |
 
 **Derived/consistency checks** (used by tests, not registers): battery power ≈
 battery current × battery voltage; grid S32 ≈ external meter reading. See
@@ -99,16 +103,22 @@ base address + slice so a block read can be sliced.
 The live Solarman datalogger NAKs any single read wider than ~100 registers with
 `illegal_address` (probed: `33022+100` OK, `33022+110` NAK) — a **stricter** bound
 than the sidecar's 125-register wire cap (`REQ-SD-07`). The manager therefore reads
-the telemetry bank (33022–33175) as **two blocks of ≤ 100**, split at `33121|33122`
+the telemetry bank (33022–33214) as **two blocks of ≤ 100**, split at `33121|33122`
 so no multi-word value straddles the boundary:
 
 - block 1 = `{33022, 100}` → covers `33022..33121`
-- block 2 = `{33122, 54}` → covers `33122..33175`
+- block 2 = `{33122, 93}` → covers `33122..33214`
 
 The `33121|33122` split avoids the 6-word RTC block (33022–33027) and every U32/S32
 pair (33057·58, 33079·80, 33130·31, 33149·50, 33161·62, 33165·66, 33169·70,
 33173·74). `Snapshot` resolves each register by absolute address across the blocks,
 so the two reads need no merging.
+
+Both blocks are **live-confirmed** as read: on 2026-09-15 they were issued
+back-to-back in two sequential passes 3 s apart, each returning identical words
+(`docs/phase0/fixtures/live-poll-blocks-2026-09-15.json`). They MUST be issued
+**sequentially** — run concurrently on the single datalogger socket, the `33022+100`
+read times out with no reply.
 
 ## Holding registers (fc03 read / fc06 write)
 
@@ -116,6 +126,7 @@ so the two reads need no merging.
 |---|---|---|---|---|
 | 43000–43005 | RTC set (y/mo/d/h/mi/s) | U16×6 | y = reg+2000; mirrors input 33022–33027 | R/W |
 | 43011 | Min SOC (overdischarge) | U16 | ×1 % | R/W |
+| 43018 | Force-charge SOC | U16 | ×1 % — read-only mirror at input 33214; named but unwired | R/W |
 | 43110 | Work mode (energy-storage switch) | U16 | bitfield (see below) | R/W |
 | 43114 | Charge/discharge enable | U16 | 0 / 1 | R/W |
 | 43115 | Charge/discharge direction | U16 | 0 = charge, 1 = discharge | R/W |
@@ -185,6 +196,10 @@ registers"): product/model/firmware (33000–33003), inverter serial as ASCII
 (43034–43067), the protection-threshold table (43090–43113, 43119–43122 —
 ruled out as a schedule in Stage A, #27), the candidate force-charge/backup SOC
 pair (43024/43025, meaning unconfirmed; 43024 ignores fc06), and various
-limit/config registers (33181–33217, 43012–43049). Within the first of those,
-33206/33207 were ruled out as the BMS current-limit pair — they are constants
-(see `docs/phase0/findings.md` §"BMS current limits").
+limit/config registers (33181–33217 **except the SOC mirrors 33213/33214**, which
+are modelled above, and 43012–43049 **except the force-charge SOC setting 43018**,
+which is tabled above). Within the first of those, 33206/33207 were
+ruled out as the BMS current-limit pair because the Solis app cross-check pins the
+BMS charge limit to 33143, not because they are fixed — 33206 has since been seen
+changing (see `docs/phase0/findings.md` §"BMS current limits", including the open
+observation at the end of that section).

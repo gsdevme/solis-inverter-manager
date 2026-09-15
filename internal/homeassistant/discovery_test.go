@@ -218,6 +218,61 @@ func TestDiscoveryBinarySensor(t *testing.T) {
 	}
 }
 
+// TestDiscoveryBMSFaultBits covers the per-bit fault sensors: each is a
+// problem-class diagnostic binary_sensor reading its own boolean from the shared
+// state document, so an active protection shows up in Home Assistant as a
+// problem rather than as a number a template has to decode.
+func TestDiscoveryBMSFaultBits(t *testing.T) {
+	byTopic := mustBuildDiscovery(t)
+	keys := []string{
+		"bms_over_voltage", "bms_under_voltage", "bms_over_temp", "bms_under_temp",
+		"bms_charge_over_temp", "bms_charge_under_temp", "bms_discharge_over_current",
+		"bms_charge_over_current", "bms_internal_protection", "bms_module_unbalanced",
+	}
+	for _, key := range keys {
+		p := byTopic["homeassistant/binary_sensor/1234567890_"+key+"/config"]
+		if p == nil {
+			t.Fatalf("missing %s binary_sensor", key)
+		}
+		if p["device_class"] != "problem" {
+			t.Errorf("%s device_class = %v, want problem", key, p["device_class"])
+		}
+		if p["entity_category"] != "diagnostic" {
+			t.Errorf("%s entity_category = %v, want diagnostic", key, p["entity_category"])
+		}
+		if want := "{{ 'ON' if value_json." + key + " else 'OFF' }}"; p["value_template"] != want {
+			t.Errorf("%s value_template = %v, want %q", key, p["value_template"], want)
+		}
+	}
+}
+
+// TestDiscoverySOCThresholdMirrors pins the two read-only SOC settings as
+// percentage diagnostics with neither device_class nor state_class: they are
+// near-static configuration, so recording long-term statistics for them would be
+// noise, and a "battery" device_class would make Home Assistant read the
+// threshold as the device's remaining charge.
+func TestDiscoverySOCThresholdMirrors(t *testing.T) {
+	byTopic := mustBuildDiscovery(t)
+	for _, key := range []string{"overdischarge_soc", "force_charge_soc"} {
+		p := byTopic["homeassistant/sensor/1234567890_"+key+"/config"]
+		if p == nil {
+			t.Fatalf("missing %s sensor", key)
+		}
+		if _, present := p["device_class"]; present {
+			t.Errorf("%s should not carry device_class, got %v", key, p["device_class"])
+		}
+		if p["unit_of_measurement"] != "%" {
+			t.Errorf("%s unit_of_measurement = %v, want %%", key, p["unit_of_measurement"])
+		}
+		if p["entity_category"] != "diagnostic" {
+			t.Errorf("%s entity_category = %v, want diagnostic", key, p["entity_category"])
+		}
+		if _, present := p["state_class"]; present {
+			t.Errorf("%s should not carry state_class, got %v", key, p["state_class"])
+		}
+	}
+}
+
 func TestDiscoveryTimestampAndDuration(t *testing.T) {
 	byTopic := mustBuildDiscovery(t)
 	rtc := byTopic["homeassistant/sensor/1234567890_rtc/config"]
@@ -237,7 +292,7 @@ func TestDiscoveryTimestampAndDuration(t *testing.T) {
 // device_class/state_class/unit (status, operating_status, work_mode).
 func TestDiscoveryBareDiagnosticSensors(t *testing.T) {
 	byTopic := mustBuildDiscovery(t)
-	for _, key := range []string{"status", "operating_status", "work_mode"} {
+	for _, key := range []string{"status", "status_text", "operating_status", "work_mode", "bms_fault_1", "bms_fault_2"} {
 		p := byTopic["homeassistant/sensor/1234567890_"+key+"/config"]
 		if p == nil {
 			t.Fatalf("missing %s", key)
@@ -257,12 +312,12 @@ func TestDiscoveryBareDiagnosticSensors(t *testing.T) {
 }
 
 // TestDiscoveryControlsDisabledByDefault covers the Phase-4 behaviour: with
-// ControlsEnabled unset, only the 42 read-only entities are published and no
+// ControlsEnabled unset, only the 57 read-only entities are published and no
 // message carries a command_topic.
 func TestDiscoveryControlsDisabledByDefault(t *testing.T) {
 	byTopic := mustBuildDiscoveryFor(t, testConfig())
-	if len(byTopic) != 42 {
-		t.Fatalf("got %d discovery messages, want 42", len(byTopic))
+	if len(byTopic) != 57 {
+		t.Fatalf("got %d discovery messages, want 57", len(byTopic))
 	}
 	for topic, p := range byTopic {
 		if _, present := p["command_topic"]; present {
@@ -285,8 +340,8 @@ func TestDiscoveryControlsEnabled(t *testing.T) {
 	c := testConfig()
 	c.ControlsEnabled = true
 	byTopic := mustBuildDiscoveryFor(t, c)
-	if len(byTopic) != 47 {
-		t.Fatalf("got %d discovery messages, want 47", len(byTopic))
+	if len(byTopic) != 62 {
+		t.Fatalf("got %d discovery messages, want 62", len(byTopic))
 	}
 
 	num := byTopic["homeassistant/number/1234567890_set_charge_current/config"]

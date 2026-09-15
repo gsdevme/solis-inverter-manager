@@ -38,7 +38,16 @@ type Battery struct {
 	// apply to a limit.
 	BMSChargeCurrentLimitA    float64 // 33143, ÷10 A
 	BMSDischargeCurrentLimitA float64 // 33144, ÷10 A
-	PowerW                    float64 // 33149·33150, W, magnitude signed by 33135 (+ = charge, − = discharge)
+	// BMSFault1 and BMSFault2 are the BMS fault/protection bitfields (33145,
+	// 33146); see bmsfault.go for the bit map and its confidence.
+	BMSFault1 BMSFault1
+	BMSFault2 BMSFault2
+	// OverdischargeSOCPercent and ForceChargeSOCPercent are read-only mirrors of
+	// the inverter's own SOC settings (33213, 33214): where it stops discharging
+	// and where it force-charges from the grid.
+	OverdischargeSOCPercent float64 // 33213, ×1 %
+	ForceChargeSOCPercent   float64 // 33214, ×1 %
+	PowerW                  float64 // 33149·33150, W, magnitude signed by 33135 (+ = charge, − = discharge)
 }
 
 // PV holds the decoded photovoltaic (DC) values.
@@ -179,6 +188,12 @@ func DecodeTelemetry(s Snapshot) (Telemetry, error) {
 
 		BMSChargeCurrentLimitA:    div10(float64(r.u16(RegBMSChargeCurrentLimit))),
 		BMSDischargeCurrentLimitA: div10(float64(r.u16(RegBMSDischargeCurrentLimit))),
+
+		BMSFault1: DecodeBMSFault1(r.u16(RegBMSFault1)),
+		BMSFault2: DecodeBMSFault2(r.u16(RegBMSFault2)),
+
+		OverdischargeSOCPercent: float64(r.u16(RegOverdischargeSOC)),
+		ForceChargeSOCPercent:   float64(r.u16(RegForceChargeSOC)),
 
 		PowerW: signedByDirection(float64(r.s32(RegBatteryPower)), charging),
 	}

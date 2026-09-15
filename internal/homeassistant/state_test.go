@@ -43,11 +43,11 @@ func TestStateTagsEqualEntityKeys(t *testing.T) {
 		}
 		keys[e.Key] = true
 	}
-	if len(keys) != 46 {
-		t.Errorf("got %d stateful entity keys, want 46", len(keys))
+	if len(keys) != 61 {
+		t.Errorf("got %d stateful entity keys, want 61", len(keys))
 	}
-	if len(tags) != 46 {
-		t.Errorf("got %d state json tags, want 46", len(tags))
+	if len(tags) != 61 {
+		t.Errorf("got %d state json tags, want 61", len(tags))
 	}
 	for k := range keys {
 		if !tags[k] {
@@ -68,6 +68,9 @@ func sampleTelemetry() inverter.Telemetry {
 			VoltageV: 51.2, CurrentA: -3.4, Charging: false, SOCPercent: 87, SOHPercent: 99,
 			BMSVoltageV: 51.25, BMSCurrentA: -3.4, PowerW: -174,
 			BMSChargeCurrentLimitA: 15, BMSDischargeCurrentLimitA: 112.5,
+			BMSFault1:               inverter.DecodeBMSFault1(0x0002),
+			BMSFault2:               inverter.DecodeBMSFault2(0x0010),
+			OverdischargeSOCPercent: 20, ForceChargeSOCPercent: 19,
 		},
 		PV:     inverter.PV{PV1VoltageV: 320.5, PV1CurrentA: 4.1, PV2VoltageV: 0, PV2CurrentA: 0, TotalPowerW: 1314},
 		Grid:   inverter.Grid{PowerW: -250, TotalImportKWh: 1234, ImportTodayKWh: 5.6, TotalExportKWh: 890, ExportTodayKWh: 7.8},
@@ -150,9 +153,36 @@ func TestBuildStateTopicAndValues(t *testing.T) {
 	if got["work_mode"] != "Self Use" {
 		t.Errorf("work_mode = %v, want Self Use", got["work_mode"])
 	}
-	// Raw system enums as numbers.
+	// Raw system enums as numbers, with the decoded label alongside.
 	if got["status"] != float64(3) || got["operating_status"] != float64(4099) {
 		t.Errorf("status/operating_status = %v / %v", got["status"], got["operating_status"])
+	}
+	if got["status_text"] != "Generating" {
+		t.Errorf("status_text = %v, want Generating", got["status_text"])
+	}
+	// The fault words publish raw alongside one boolean per decoded bit; the
+	// sample carries 33145 = 0x0002 (over voltage) and 33146 = 0x0010 (module
+	// unbalanced), so exactly those two bits are ON.
+	if got["bms_fault_1"] != float64(2) || got["bms_fault_2"] != float64(16) {
+		t.Errorf("bms_fault_1/bms_fault_2 = %v / %v", got["bms_fault_1"], got["bms_fault_2"])
+	}
+	for _, key := range []string{"bms_over_voltage", "bms_module_unbalanced"} {
+		if got[key] != true {
+			t.Errorf("%s = %v, want true", key, got[key])
+		}
+	}
+	for _, key := range []string{
+		"bms_under_voltage", "bms_over_temp", "bms_under_temp", "bms_charge_over_temp",
+		"bms_charge_under_temp", "bms_discharge_over_current", "bms_charge_over_current",
+		"bms_internal_protection",
+	} {
+		if got[key] != false {
+			t.Errorf("%s = %v, want false", key, got[key])
+		}
+	}
+	// SOC threshold mirrors, published as raw percentages.
+	if got["overdischarge_soc"] != float64(20) || got["force_charge_soc"] != float64(19) {
+		t.Errorf("overdischarge_soc/force_charge_soc = %v / %v", got["overdischarge_soc"], got["force_charge_soc"])
 	}
 	// Setpoints folded in from Setpoints.
 	if got["set_charge_current"] != 25.5 || got["set_discharge_current"] != float64(40) {
@@ -165,6 +195,78 @@ func TestBuildStateTopicAndValues(t *testing.T) {
 	// rtc_sync (button) must NOT appear in the state document.
 	if _, present := got["rtc_sync"]; present {
 		t.Errorf("state should not carry rtc_sync, got %v", got["rtc_sync"])
+	}
+}
+
+// bmsFaultBits pairs each modelled BMS fault bit with the state key BuildState
+// must set from it. The wiring in state.go is ten near-identical assignments, so
+// a cross-wired field stays invisible unless every bit is exercised on its own.
+// Bit positions come from inverter/bmsfault.go.
+var bmsFaultBits = []struct {
+	key            string
+	fault1, fault2 uint16
+}{
+	{key: "bms_over_voltage", fault1: 1 << 1},
+	{key: "bms_under_voltage", fault1: 1 << 2},
+	{key: "bms_over_temp", fault1: 1 << 3},
+	{key: "bms_under_temp", fault1: 1 << 4},
+	{key: "bms_charge_over_temp", fault1: 1 << 5},
+	{key: "bms_charge_under_temp", fault1: 1 << 6},
+	{key: "bms_discharge_over_current", fault1: 1 << 7},
+	{key: "bms_charge_over_current", fault2: 1 << 0},
+	{key: "bms_internal_protection", fault2: 1 << 3},
+	{key: "bms_module_unbalanced", fault2: 1 << 4},
+}
+
+// bmsFaultState builds the state document for the sample telemetry with the two
+// BMS fault words overridden.
+func bmsFaultState(t *testing.T, fault1, fault2 uint16) map[string]any {
+	t.Helper()
+	tel := sampleTelemetry()
+	tel.Battery.BMSFault1 = inverter.DecodeBMSFault1(fault1)
+	tel.Battery.BMSFault2 = inverter.DecodeBMSFault2(fault2)
+	msg, err := testConfig().BuildState(tel, 90*time.Second, Setpoints{})
+	if err != nil {
+		t.Fatalf("BuildState: %v", err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(msg.Payload, &got); err != nil {
+		t.Fatalf("bad payload: %v", err)
+	}
+	return got
+}
+
+// TestBuildStateBMSFaultBitWiring sets one fault bit at a time and asserts that
+// exactly its own state key flips, so no two bits can be crossed.
+func TestBuildStateBMSFaultBitWiring(t *testing.T) {
+	for _, tc := range bmsFaultBits {
+		t.Run(tc.key, func(t *testing.T) {
+			got := bmsFaultState(t, tc.fault1, tc.fault2)
+			if got["bms_fault_1"] != float64(tc.fault1) || got["bms_fault_2"] != float64(tc.fault2) {
+				t.Errorf("raw words = %v / %v, want %d / %d",
+					got["bms_fault_1"], got["bms_fault_2"], tc.fault1, tc.fault2)
+			}
+			for _, other := range bmsFaultBits {
+				want := other.key == tc.key
+				if got[other.key] != want {
+					t.Errorf("%s = %v, want %v", other.key, got[other.key], want)
+				}
+			}
+		})
+	}
+}
+
+// TestBuildStateBMSFaultAllBits sets every modelled bit of both words at once
+// (33145 = 0x00FE, 33146 = 0x0019) and asserts all ten sensors read true.
+func TestBuildStateBMSFaultAllBits(t *testing.T) {
+	got := bmsFaultState(t, 0x00FE, 0x0019)
+	if got["bms_fault_1"] != float64(0x00FE) || got["bms_fault_2"] != float64(0x0019) {
+		t.Errorf("raw words = %v / %v, want 254 / 25", got["bms_fault_1"], got["bms_fault_2"])
+	}
+	for _, b := range bmsFaultBits {
+		if got[b.key] != true {
+			t.Errorf("%s = %v, want true", b.key, got[b.key])
+		}
 	}
 }
 

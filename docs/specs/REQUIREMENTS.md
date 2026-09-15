@@ -165,24 +165,33 @@ confirm.
   `docs/phase0/findings.md` §"Stage A (#27)", §"Stage B2 pre-design probe"
 - **REQ-RM-12** Telemetry-bank read split: the live datalogger NAKs any single read wider
   than ~100 registers with `illegal_address` — a **stricter** bound than the sidecar's
-  125-register wire cap (REQ-SD-07) — so 33022–33175 is read as two blocks of ≤ 100,
-  `{33022, 100}` and `{33122, 54}`, split at `33121|33122`. That boundary straddles
+  125-register wire cap (REQ-SD-07) — so 33022–33214 is read as two blocks of ≤ 100,
+  `{33022, 100}` and `{33122, 93}`, split at `33121|33122`. That boundary straddles
   neither the 6-word RTC block nor any U32/S32 pair, and `Snapshot` resolves across both
-  blocks (REQ-RM-01), so the two reads need no merging.
+  blocks (REQ-RM-01), so the two reads need no merging. Both widths are
+  **live-confirmed** 2026-09-15 — read back-to-back in two sequential passes that
+  returned identical words (`docs/phase0/fixtures/live-poll-blocks-2026-09-15.json`) —
+  and the blocks must be issued **sequentially**: concurrent reads on the single
+  datalogger socket time out, which the manager's serialised poll already guarantees.
   → `publisher/collect.go`, `docs/phase0/findings.md` ambiguity #10
-- **REQ-RM-13** *(reserved)* Four probe-confirmed holding constants are **named but not
+- **REQ-RM-13** *(reserved)* Five probe-confirmed holding constants are **named but not
   yet wired** into decode, publish or any write path: `RegMinSOC` (43011),
-  `RegChargeDischargeEnable` (43114), `RegChargeDischargeDirection` (43115) and
-  `RegInstantCurrent` (43116). Naming them is deliberate — they are confirmed
+  `RegForceChargeSOCSetting` (43018), `RegChargeDischargeEnable` (43114),
+  `RegChargeDischargeDirection` (43115) and `RegInstantCurrent` (43116). The two SOC
+  settings are reachable through their input mirrors (REQ-RM-17), which is what
+  telemetry reads. Naming them is deliberate — they are confirmed
   ground truth — but giving any of them behaviour needs its own requirement.
   `RegMaxChargeCurrent` (43117) and `RegMaxDischargeCurrent` (43118) left this
   reserved set in REQ-RM-15 — they are now read and published, still never written.
   → `inverter/registers.go`
 - **REQ-RM-14** *(deferred scope)* Registers findings.md captures that `internal/inverter`
   deliberately does **not** model yet: product/model/firmware `33000–33003`, inverter
-  serial as ASCII `33004–33011`, limit/config `33181–33217`, the meter cross-check
-  `33263`, holding `43012–43049` (including the `43024`/`43025` SOC-shaped pair —
-  `43024` acks fc06 but silently ignores it, so treat it read-only), the input-statistic
+  serial as ASCII `33004–33011`, limit/config `33181–33217` **except the SOC mirrors
+  `33213`/`33214`** (modelled in REQ-RM-17), the meter cross-check
+  `33263`, holding `43012–43049` **except the force-charge SOC setting `43018`**
+  (named under REQ-RM-13 and mirrored at `33214`); the deferred remainder includes the
+  `43024`/`43025` SOC-shaped pair, where `43024` acks fc06 but silently ignores it, so
+  treat it read-only. Also deferred: the input-statistic
   mirrors `43034–43067`, and the protection-threshold table `43090–43122` (ruled out as
   a schedule in Stage A). This is an explicit **deferred scope**, not an omission: the
   full sweep reads cleanly and expanding to complete Modbus coverage is intended, but
@@ -201,11 +210,42 @@ confirm.
   traffic. Confirmed against the Solis app on 2026-09-15 (0 A charge / 112.5 A discharge).
   → `inverter/registers.go`, `inverter/telemetry.go`, `controls/setpoints.go`,
   `docs/phase0/findings.md` §"BMS current limits", ambiguity #14
+- **REQ-RM-16** The BMS fault words `RegBMSFault1` (33145) and `RegBMSFault2` (33146)
+  are decoded as bitfields into `BMSFault1`/`BMSFault2`, each preserving the original
+  word in `Raw` and exposing `Any()` (raw ≠ 0) so an unmodelled bit still reads as a
+  fault. They are **decode-only** — nothing writes them. The bit assignments come from
+  the vendor hybrid protocol document and are **unconfirmed live**: both words read 0 in
+  every capture, so only the addressing and the "no fault" decode are proven, and `Raw`
+  is published alongside the per-bit sensors so a real fault can be reconciled against
+  the vendor table (REQ-HA-22).
+  → `inverter/bmsfault.go`, `inverter/telemetry.go`,
+  `docs/phase0/findings.md` §"BMS fault words", ambiguity #15
+- **REQ-RM-17** The SOC-threshold mirrors `RegOverdischargeSOC` (33213) and
+  `RegForceChargeSOC` (33214) are decoded as plain percentages (×1) and published
+  read-only; they are the input-bank mirrors of the holding SOC settings `RegMinSOC`
+  (43011) and `RegForceChargeSOCSetting` (43018), which is their confirmation:
+  `33213` = `43011` = 20 and `33214` = `43018` = 19 in the same full sweep, both
+  mirrors re-read unchanged a week later. They
+  leave the deferred `33181–33217` range of REQ-RM-14. Reaching them widens the second
+  telemetry block from `{33122, 54}` to `{33122, 93}` (REQ-RM-12) — still one read and
+  still inside the ~100-register datalogger cap, so no extra Modbus traffic. The
+  93-register read is live-confirmed 2026-09-15
+  (`docs/phase0/fixtures/live-poll-blocks-2026-09-15.json`, two identical passes).
+  → `inverter/registers.go`, `inverter/telemetry.go`, `publisher/collect.go`,
+  `docs/phase0/findings.md` §"SOC threshold mirrors"
+- **REQ-RM-18** `StatusLabel` maps the `33095` status enum to the vendor display text
+  (protocol Appendix 2, "all 4G" column), falling back to the hex form `0x%04X` for an
+  unlisted code so an unknown status is legible and never mislabelled. The table lives in
+  `internal/inverter` as domain knowledge, like `WorkMode`; `homeassistant/state.go` only
+  calls it. The raw enum keeps its own sensor (REQ-HA-22).
+  → `inverter/status.go`, `homeassistant/state.go`,
+  `docs/phase0/findings.md` §"Inverter status enum"
+
 ## MQTT & Home Assistant (`internal/mqtt`, `internal/homeassistant`, `internal/publisher`)
 
 Phase 4 (#20/#21) is **read-only** discovery + state + availability. See
 [`03-mqtt-ha-discovery.md`](03-mqtt-ha-discovery.md) for the full topic scheme,
-payload shapes and the 42-entity table.
+payload shapes and the 57-entity table.
 
 - **REQ-HA-01** Discovery: one **retained**, QoS-1 config per entity at
   `<HA_DISCOVERY_PREFIX>/<component>/<serial>_<key>/config` (object_id form);
@@ -217,9 +257,9 @@ payload shapes and the 42-entity table.
 - **REQ-HA-02** State: a single **retained**, QoS-1 JSON document at `<base>/state`;
   every entity reads it via `value_template {{ value_json.<key> }}` (binary_sensor
   via `{{ 'ON' if value_json.<key> else 'OFF' }}`); the state DTO's json tags are
-  the 42 read-only entity keys plus the four control-readback fields
+  the 57 read-only entity keys plus the four control-readback fields
   (`set_charge_current`, `set_discharge_current`, `optimal_income`,
-  `boost_select`) — 46 tags.
+  `boost_select`) — 61 tags.
   `rtc` is RFC3339; `rtc_drift` is seconds.
   → `homeassistant/state.go`, `homeassistant/entities.go`
 - **REQ-HA-03** Entity classes per the `03` table; **daily** energy counters use
@@ -400,6 +440,21 @@ See the write-path sections of
   `object_id` and every entity id are untouched.
   → `homeassistant/entities.go`, `homeassistant/state.go`, `controls/setpoints.go`,
   `cmd/serve.go`
+- **REQ-HA-22** Fifteen read-only diagnostic entities publish the BMS fault, SOC-threshold
+  and status-label additions of REQ-RM-16/17/18, all `entity_category: diagnostic` and all
+  published whether or not `CONTROLS_ENABLED` is set: `bms_fault_1` / `bms_fault_2`
+  (sensors, the raw `33145`/`33146` words, no device or state class); ten
+  `device_class: problem` binary_sensors, one per decoded bit — `bms_over_voltage`,
+  `bms_under_voltage`, `bms_over_temp`, `bms_under_temp`, `bms_charge_over_temp`,
+  `bms_charge_under_temp`, `bms_discharge_over_current`, `bms_charge_over_current`,
+  `bms_internal_protection`, `bms_module_unbalanced`; `overdischarge_soc` /
+  `force_charge_soc` (unit `%`, **no** `device_class` — `battery` would read as the
+  device's own remaining charge — and **no** `state_class`, near-static configuration
+  for which long-term statistics would be noise); and `status_text`, the decoded
+  `33095` label published beside the unchanged numeric `status`. Entity catalogue: 47 → 62
+  (57 read-only, 61 state tags).
+  → `homeassistant/entities.go`, `homeassistant/state.go`, `inverter/status.go`,
+  `inverter/bmsfault.go`
 
 ## Scheduling (`internal/scheduler`, `04-polling-scheduling.md`)
 
@@ -554,7 +609,7 @@ health-driven readiness.
 
 See [`07-testing.md`](07-testing.md) for the authored detail.
 
-- **REQ-TS-01** Go unit/integration suite: 28 `*_test.go` files covering `config`
+- **REQ-TS-01** Go unit/integration suite: 31 `*_test.go` files covering `config`
   (defaults, validation, redaction), `server` (probes, readiness, status page),
   `inverter` (decode/encode), `homeassistant` (discovery/state payloads), `publisher`,
   `controls`, `schedule`, `scheduler`, `mqtt`, `cmd` and `sidecarclient`. `make test`
@@ -565,8 +620,8 @@ See [`07-testing.md`](07-testing.md) for the authored detail.
   rather than hand-written expectations — the same captures REQ-RM-* traces to.
   → `inverter/fixture_test.go`, `inverter/telemetry_test.go`, `inverter/writeprobe_test.go`,
   `docs/phase0/fixtures/`
-- **REQ-TS-03** godog acceptance suite: six feature files / **30 scenarios** —
-  `health` (2), `mqtt_discovery` (4), `mqtt_controls` (6), `polling` (3), `schedule` (2),
+- **REQ-TS-03** godog acceptance suite: six feature files / **31 scenarios** —
+  `health` (2), `mqtt_discovery` (5), `mqtt_controls` (6), `polling` (3), `schedule` (2),
   `schedule_controls` (13) — sharing one `features/steps_test.go`, run by `make test-e2e`.
   The suite wires the **real** units in-process against Go fakes rather than a live
   sidecar or broker: `stubReader` implements `publisher.RegisterReader` (zero-filled or

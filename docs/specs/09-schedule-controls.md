@@ -263,8 +263,8 @@ cycle is logged at debug and the next successful read re-asserts the schedule.
 field. The payload adds `options`, `state_topic: ~/state`,
 `value_template: {{ value_json.<key> }}` and (with `Command: true`)
 `command_topic: ~/<key>/set`. Command entities remain omitted when
-`CONTROLS_ENABLED=false`. Entity counts: 42 read-only entities and five
-command entities — 47 in all, the catalogue ending `…, optimal_income` (select),
+`CONTROLS_ENABLED=false`. Entity counts: 57 read-only entities and five
+command entities — 62 in all, the catalogue ending `…, optimal_income` (select),
 `boost_select` (select), `rtc_sync`.
 
 ## Package layout
