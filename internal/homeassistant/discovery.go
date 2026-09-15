@@ -107,20 +107,7 @@ func (c Config) buildEntityPayload(e Entity, device map[string]any) map[string]a
 		p["state_topic"] = "~/state"
 		p["payload_on"] = "ON"
 		p["payload_off"] = "OFF"
-		if e.InvertBool {
-			p["value_template"] = fmt.Sprintf("{{ 'OFF' if value_json.%s else 'ON' }}", e.Key)
-		} else {
-			p["value_template"] = fmt.Sprintf("{{ 'ON' if value_json.%s else 'OFF' }}", e.Key)
-		}
-	// Unused by the current Solis catalogue, which publishes no switch entity;
-	// kept for parity with the shape.
-	case Switch:
-		p["state_topic"] = "~/state"
-		p["payload_on"] = e.PayloadOn
-		p["payload_off"] = e.PayloadOff
-		p["state_on"] = e.StateOn
-		p["state_off"] = e.StateOff
-		p["value_template"] = fmt.Sprintf("{{ value_json.%s }}", e.Key)
+		p["value_template"] = fmt.Sprintf("{{ 'ON' if value_json.%s else 'OFF' }}", e.Key)
 	case Select:
 		p["state_topic"] = "~/state"
 		p["options"] = e.Options
