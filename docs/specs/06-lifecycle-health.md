@@ -6,7 +6,8 @@ composition root and process lifecycle.
 ## HTTP surface (`internal/server`)
 
 - **`GET /healthz`** — liveness, always `200 ok` while the process runs.
-- **`GET /readyz`** — readiness, driven by the scheduler (not a manual `SetReady`):
+- **`GET /readyz`** — readiness, driven by the scheduler in production
+  (`MarkSuccess`/`MarkFailure`; nothing in `cmd` sets it directly):
   - `503` at startup, before the first successful poll.
   - `200 ready` after the first poll whose telemetry read **and** state publish both
     succeed (`MarkSuccess`).
@@ -16,6 +17,11 @@ composition root and process lifecycle.
   - Reflects sidecar reachability **transitively**: an unreachable sidecar fails the
     poll's telemetry read, which (after the threshold) fails readiness. There is no
     separate sidecar probe on `/readyz`.
+  - `Server.SetReady(bool)` exists alongside those two as a **test/godog seam**
+    (`REQ-LC-13`): it sets the flag directly and bypasses the consecutive-failure
+    counter (setting ready also resets it), so a scenario can assert a readiness
+    transition without driving whole poll cycles. It is never called on the
+    production path.
 - **`GET /{$}`** — a minimal HTML status page: service name, readiness, uptime, poll
   interval, Go version, and the last inverter values: every key of the state
   document (`03-mqtt-ha-discovery.md`) as read on the most recent poll or command

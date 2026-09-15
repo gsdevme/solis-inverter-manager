@@ -76,7 +76,7 @@ The constants are `Manufacturer`, `Model`, `DeviceName` in `entities.go`;
 
 ## Discovery config shape
 
-Keys present in every discovery payload (`buildEntityPayload`):
+Keys present in **every** discovery payload (`buildEntityPayload`):
 
 | Key | Value |
 | --- | --- |
@@ -85,16 +85,28 @@ Keys present in every discovery payload (`buildEntityPayload`):
 | `unique_id` | `<serial>_<key>` |
 | `object_id` | `<HA_OBJECT_ID_PREFIX>_<key>` |
 | `default_entity_id` | `<component>.<HA_OBJECT_ID_PREFIX>_<key>` |
-| `state_topic` | `~/state` |
 | `availability_topic` | `~/availability` |
 | `payload_available` | `online` |
 | `payload_not_available` | `offline` |
 | `device` | the shared device block |
+
+Keys present on every **stateful** entity — every component except `button`:
+
+| Key | Value |
+| --- | --- |
+| `state_topic` | `~/state` |
 | `value_template` | see below |
+
+> A `button` is deliberately **stateless**: it carries neither `state_topic` nor
+> `value_template`, because a press is a command with nothing to read back. Instead
+> it carries `payload_press` (`PRESS`), and Home Assistant renders it from the
+> discovery config alone. The control table below records the same thing for
+> `rtc_sync`.
 
 Emitted only when non-empty for the entity: `device_class`, `state_class`,
 `unit_of_measurement` (from `Unit`), `entity_category` (from `Category`,
-`diagnostic`), `suggested_display_precision` (from `Precision`, see below).
+`diagnostic`), `suggested_display_precision` (from `Precision`, see below), and
+`mode` (from `Entity.Mode` — `number` entities only, see *Control entities*).
 
 `value_template`:
 - sensor: `{{ value_json.<key> }}`
@@ -156,13 +168,20 @@ Value encodings of note:
   unit `s`). Drift is computed by the caller (`Drift(t.Time, time.Now())` in the
   publisher) and passed in, because the builder is pure and must not read the
   clock.
-- `work_mode` is the energy-storage mode label derived from the 43110 bitfield
-  (`workModeLabel`): bit 0 renders as `Self Use`, the only storage mode observed
-  on this unit and the label for both observed register values (35 and 33, which
-  differ only in the Optimal Income bit `select.optimal_income` owns). Any other
-  combination joins the active flags (`timed`, `allow_grid_charge`) with `+`,
-  falling back to the raw register value when no known flag is set, so an
-  unknown mode is never mislabelled.
+- `work_mode` is the energy-storage mode label (`workModeLabel`) built from
+  `t.System.WorkMode`, which is decoded from **input register `33132`**
+  (`RegWorkModeReadback`) — the read-back mirror of the `43110` work-mode bitfield
+  (`02-register-map.md`, REQ-RM-09). The bitfield semantics are 43110's, but the
+  telemetry path reads the input bank, because `work_mode` rides the telemetry block
+  read rather than the setpoint read. Bit 0 renders as `Self Use`, the only storage
+  mode observed on this unit and the label for both observed register values (35 and
+  33, which differ only in the Optimal Income bit `select.optimal_income` owns). Any
+  other combination joins the active flags (`timed`, `allow_grid_charge`) with `+`,
+  falling back to the raw register value when no known flag is set, so an unknown mode
+  is never mislabelled.
+  `select.optimal_income`'s own state, by contrast, **is** read from holding `43110`
+  (via `controls.ReadSetpoints`, which reads `43110`+61 on every poll), so the two
+  entities report the same bitfield from different banks.
 - `boost_select` is the `select.boost_select` option derived from slot 3 — `Off`,
   one of the eight `Charge|Discharge NN min` options, or JSON `null` for a window
   that matches no option (see `09-schedule-controls.md`).
@@ -419,13 +438,25 @@ Five writable entities join the catalogue (the read-only table above is unchange
 at 38; with controls enabled the device carries 43). Registers are the Phase 0
 confirmed addresses — never invent them.
 
-| Key | Component | Range / payloads | Register | Encoding |
-| --- | --- | --- | --- | --- |
-| `set_charge_current` | `number` | 0–60 A, step 0.1 | `43141` (RegTimedChargeCurrent) | U16, `÷10` A |
-| `set_discharge_current` | `number` | 0–60 A, step 0.1 | `43142` (RegTimedDischargeCurrent) | U16, `÷10` A |
-| `optimal_income` | `select` | `"Run"` / `"Stop"` | `43110` (RegWorkMode) bit 1 | read-modify-write; `33`↔`35` |
-| `boost_select` | `select` | `Off`, `Charge 15\|30\|45\|60 min`, `Discharge 15\|30\|45\|60 min` | slot 3 H/M `43163–43170` | all eight slot registers pass the guard; the unused direction is asserted empty and is always cleared first (charge block first only when both directions are unset or both are set); within a direction the order is start hour, start minute, end hour, end minute |
-| `rtc_sync` | `button` | press (any payload) | `43000–43005` (RegRTCSet) | U16×6 local datetime; `entity_category: diagnostic` |
+| Key | Name | Component | Range / payloads | Register | Encoding |
+| --- | --- | --- | --- | --- | --- |
+| `set_charge_current` | Set charge current | `number` | 0–60 A, step 0.1, `mode: box` | `43141` (RegTimedChargeCurrent) | U16, `÷10` A |
+| `set_discharge_current` | Set discharge current | `number` | 0–60 A, step 0.1, `mode: box` | `43142` (RegTimedDischargeCurrent) | U16, `÷10` A |
+| `optimal_income` | Optimal income | `select` | `"Run"` / `"Stop"` | `43110` (RegWorkMode) bit 1 | read-modify-write; `33`↔`35` |
+| `boost_select` | **Boost control** | `select` | `Off`, `Charge 15\|30\|45\|60 min`, `Discharge 15\|30\|45\|60 min` | slot 3 H/M `43163–43170` | all eight slot registers pass the guard; the unused direction is asserted empty and is always cleared first (charge block first only when both directions are unset or both are set); within a direction the order is start hour, start minute, end hour, end minute |
+| `rtc_sync` | Sync RTC now | `button` | press (`payload_press: PRESS`; the handler acts on any payload) | `43000–43005` (RegRTCSet) | U16×6 local datetime; `entity_category: diagnostic`; **stateless** — no `state_topic`/`value_template` |
+
+- **Friendly names are disambiguated from the read-only sensors.** `sensor.boost`
+  (the derived slot-3 configuration, entity #37 above) is named **"Boost"**, so the
+  writable `select.boost_select` is named **"Boost control"**. Without that the two
+  would both surface as *Solis Inverter Boost* in the Home Assistant UI — same device,
+  same visible name, one readable and one writable. The **keys are unchanged**
+  (`boost` and `boost_select`), so `unique_id`s, discovery topics and entity ids are
+  untouched; only the display name differs.
+- **`mode: "box"` on the two `number` controls.** `Entity.Mode` is emitted as the
+  discovery key `mode`, and both amp controls set it to `box`, so Home Assistant renders
+  a numeric input box rather than a slider — a 0.1 A step across a 0–60 A range is not
+  usefully draggable. `mode` is omitted for every non-`number` component.
 
 - **Amp numbers** (REQ-HA-08) write the scaled integer `round(amps, 1) * 10` via
   fc06, behind the guard. The `0–60 A` range is the deliberate HA clamp — the unit

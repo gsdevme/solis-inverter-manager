@@ -85,7 +85,7 @@ TDD throughout; godog `.feature` coverage where behaviour is observable.
 | 4 — HA discovery + state (read-only) | #21 | ✅ done | autopaho, LWT+availability, device + read-only entities, retained state JSON, reconnect re-publish |
 | 5 — Writable controls | #22 | ✅ done | `number` (amps 0–60), `select` (work mode 33/35), RTC sync; read-before-write + re-read confirm |
 | 6 — Scheduler | #23 | ✅ done | serialized ~60s poll, backoff, retained cache, failure-threshold readiness, injectable clock, opt-in threshold-gated RTC auto-sync |
-| 7 — Deployment | #24 | ✅ done | manager `Dockerfile` (distroless nonroot) + sidecar image; full `docker-compose` stack (mqtt + sidecar + manager); CI `docker-build` (build-only) + release-please/release.yml (multi-arch, build-only pending approval); two-container pod, ConfigMap/Secret, probes documented as reference examples in `08-deployment.md` (manifests live in a separate GitOps/Helm/Flux repo) |
+| 7 — Deployment | #24 | ✅ done | manager `Dockerfile` (distroless nonroot) + sidecar image; full `docker-compose` stack (mqtt + sidecar + manager); CI `docker-build` (build-only) + release-please/release.yml (multi-arch, **pushes both images to ghcr** on each release — approved as of `v2.0.0`); two-container pod, ConfigMap/Secret, probes documented as reference examples in `08-deployment.md` (manifests live in a separate GitOps/Helm/Flux repo) |
 
 Exit criteria for each phase are on its GitHub issue.
 
@@ -97,12 +97,15 @@ Boost: #27 done; #28 B1 done, B2 done (live smoke passed 2026-09-14).
 `MODE` (`mock|live`), `INVERTER_IP`, `INVERTER_SERIAL` (datalogger/WiFi-stick
 serial — numeric), `INVERTER_PORT` (8899), `INVERTER_SOCKET_TIMEOUT`,
 `SIDECAR_URL` (127.0.0.1), `MQTT_BROKER_URL`, `MQTT_USERNAME`, `MQTT_PASSWORD`,
-`MQTT_CLIENT_ID`, `MQTT_TOPIC_PREFIX`, `HA_DISCOVERY_PREFIX` (default
-`homeassistant`), `POLL_INTERVAL` (default 60s), `POLL_MAX_RETRIES`,
-`FAILURE_THRESHOLD`, `CONTROLS_ENABLED` (default true), `TOU_WINDOW` (default
-`23:30-05:30`), `RTC_SYNC_ENABLED` (default false), `RTC_DRIFT_THRESHOLD`
-(default 60s), `HEALTH_ADDR` (`:8080`), `LOG_LEVEL`, `LOG_FORMAT`. See
-`docs/specs/05-config.md` and `.env.dist`.
+`SIDECAR_STARTUP_TIMEOUT` (default 30s; bounds the startup wait for the sidecar's
+HTTP listener, `REQ-CF-09`), `MQTT_CLIENT_ID`, `MQTT_TOPIC_PREFIX`,
+`HA_DISCOVERY_PREFIX` (default `homeassistant`), `HA_OBJECT_ID_PREFIX` (default
+`solis_inverter`; the HA entity-id prefix, `REQ-CF-08`), `POLL_INTERVAL` (default
+60s), `POLL_MAX_RETRIES`, `FAILURE_THRESHOLD`, `CONTROLS_ENABLED` (default true),
+`TOU_WINDOW` (default `23:30-05:30`), `RTC_SYNC_ENABLED` (default false),
+`RTC_DRIFT_THRESHOLD` (default 60s), `HEALTH_ADDR` (`:8080`), `LOG_LEVEL`,
+`LOG_FORMAT`. The sidecar additionally reads `SIDECAR_LISTEN_ADDR` (default `:8081`)
+and `MOCK_FIXTURE`. See `docs/specs/05-config.md` and `.env.dist`.
 
 ## Verification
 
@@ -120,8 +123,9 @@ serial — numeric), `INVERTER_PORT` (8899), `INVERTER_SOCKET_TIMEOUT`,
 
 ## Guardrails
 
-- No `git push` beyond the `rebuild-go-sidecar` branch; **no image publish** until
-  approved.
+- No `git push` beyond the feature branch. Container **image publishing is approved**
+  as of `v2.0.0`: `release.yml` pushes the manager and sidecar images to ghcr on every
+  release-please release. Branch pushes and PRs never publish.
 - One atomic commit per change (Conventional Commits).
 - Trust no register unconfirmed — cross-reference + probe + fixtures (done in
   Phase 0) before relying on it.
