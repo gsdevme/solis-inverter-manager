@@ -1,9 +1,14 @@
 name: checks
 
-# Reusable verification gate. Called by both the PR pipeline (ci.yml) and (from
-# Phase 7) the release pipeline, so the exact same lint/test/e2e gate that guards
-# pull requests also guards releases. Uses the Makefile targets as the single
-# source of truth (same pinned tool versions as local).
+# Reusable verification gate. Called by both the PR pipeline (ci.yml) and the
+# release pipeline (release.yml), so the exact same gate that guards pull
+# requests also guards releases. Uses the Makefile targets as the single source
+# of truth (same pinned tool versions as local).
+#
+# Both halves of the service are gated here: the Go manager (lint/test/e2e) and
+# the Python sidecar (sidecar-lint/sidecar-test). Each language keeps the same
+# lint-vs-test job split so a formatting failure is distinguishable from a
+# behavioural one at a glance in the checks list.
 on:
   workflow_call:
 
@@ -19,6 +24,10 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+      # golangci-lint's `default: standard` set already runs the govet analyzers,
+      # but the testing requirements name `go vet` explicitly, so run it here too
+      # rather than spending a whole job (and another toolchain setup) on it.
+      - run: make vet
       - run: make lint
 
   test:
@@ -42,3 +51,49 @@ jobs:
         with:
           go-version-file: go.mod
       - run: make test-e2e
+
+  # The Python sidecar mirrors the Go lint/test split above. Both jobs pin
+  # python 3.12 to match the sidecar's runtime image (sidecar/Dockerfile is
+  # python:3.12-slim) and ruff's `target-version = "py312"` (sidecar/ruff.toml),
+  # so CI lints and tests against the same interpreter that ships.
+  #
+  # `cache: pip` is spelled out because, unlike setup-go, setup-python does not
+  # cache dependencies by default. The key is derived from both requirements
+  # files: requirements-dev.txt only adds pytest + ruff on top of a `-r
+  # requirements.txt` include, so the runtime pin (pysolarmanv5) lives in the
+  # other file and must take part in the key.
+  #
+  # `make sidecar-install` installs both files into the runner's interpreter;
+  # the sidecar test suite imports pysolarmanv5 for the transport tests, so the
+  # runtime deps are needed here too, not just the dev ones.
+  sidecar-lint:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: |
+            sidecar/requirements.txt
+            sidecar/requirements-dev.txt
+      - run: make sidecar-install
+      - run: make sidecar-lint
+
+  sidecar-test:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: |
+            sidecar/requirements.txt
+            sidecar/requirements-dev.txt
+      - run: make sidecar-install
+      - run: make sidecar-test
