@@ -54,17 +54,14 @@ func Drift(rtc, now time.Time) time.Duration {
 	return rtc.Sub(now)
 }
 
-// RTCRegister is an alias for Register, kept for the RTC write-guard call sites.
-type RTCRegister = Register
-
 // RTCWriteRegisters expands the six RTC holding registers (RegRTCSet..+5)
 // for time t into address/value pairs, so a guarded write loop can compare
 // and write each register independently. It reuses EncodeRTC for the values.
-func RTCWriteRegisters(t time.Time) [rtcRegisterCount]RTCRegister {
+func RTCWriteRegisters(t time.Time) [rtcRegisterCount]Register {
 	values := EncodeRTC(t)
-	var regs [rtcRegisterCount]RTCRegister
+	var regs [rtcRegisterCount]Register
 	for i, v := range values {
-		regs[i] = RTCRegister{Addr: RegRTCSet + i, Value: v}
+		regs[i] = Register{Addr: RegRTCSet + i, Value: v}
 	}
 	return regs
 }

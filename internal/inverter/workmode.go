@@ -54,16 +54,6 @@ func (w WorkMode) WithTimed(on bool) WorkMode {
 	return DecodeWorkMode(setBit(w.Raw, bitTimed, on))
 }
 
-// WithAllowGridCharge returns a copy with only bit 5 changed.
-func (w WorkMode) WithAllowGridCharge(on bool) WorkMode {
-	return DecodeWorkMode(setBit(w.Raw, bitAllowGridCharge, on))
-}
-
-// WithSelfUse returns a copy with only bit 0 changed.
-func (w WorkMode) WithSelfUse(on bool) WorkMode {
-	return DecodeWorkMode(setBit(w.Raw, bitSelfUse, on))
-}
-
 // setBit sets mask on raw when on, clears it otherwise.
 func setBit(raw, mask uint16, on bool) uint16 {
 	if on {

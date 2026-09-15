@@ -71,12 +71,19 @@ const (
 	// block corrects the inverter clock. Mirrors input RegRTCRead.
 	RegRTCSet = 43000
 
+	// RegMinSOC and the RegChargeDischarge*/RegInstantCurrent/RegMax*Current
+	// group below are probe-confirmed in docs/phase0/findings.md but not yet
+	// wired to any code path: nothing reads or writes them today. They are
+	// retained deliberately, reserved for the planned expansion of coverage to
+	// the whole inverter Modbus map, so the confirmed addresses are not lost and
+	// do not have to be re-probed against live hardware.
 	RegMinSOC = 43011
 
 	// RegWorkMode is the energy-storage work-mode bitfield; reads back here and at
 	// RegWorkModeReadback.
 	RegWorkMode = 43110
 
+	// Reserved and unwired, as RegMinSOC above.
 	RegChargeDischargeEnable    = 43114
 	RegChargeDischargeDirection = 43115
 	RegInstantCurrent           = 43116

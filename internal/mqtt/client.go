@@ -128,6 +128,11 @@ func (c *Client) buildClientConfig(u *url.URL, opts Options) autopaho.ClientConf
 // SetOnConnectionUp registers or replaces the callback invoked (in a goroutine)
 // each time the connection is (re)established — used to republish availability +
 // discovery after a broker restart. Safe to call after Connect.
+//
+// Production does not call it: cmd/serve.go supplies the hook up front through
+// Options.OnConnectionUp, which Connect stores. This setter is the seam the
+// fireOnUp/drainHook tests need, because they construct a bare &Client{} without
+// going through Connect and so have no Options to supply.
 func (c *Client) SetOnConnectionUp(fn func(ctx context.Context)) {
 	c.mu.Lock()
 	c.onUp = fn
