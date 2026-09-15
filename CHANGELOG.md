@@ -1,5 +1,14 @@
 # Changelog
 
+## [2.3.1](https://github.com/gsdevme/solis-inverter-manager/compare/v2.3.0...v2.3.1) (2026-09-15)
+
+
+### Bug Fixes
+
+* **cmd:** correct the TOU warning, health-error and sidecar-wait paths ([070844e](https://github.com/gsdevme/solis-inverter-manager/commit/070844e340511d11ac41bb402bceea50c366dc02))
+* **config:** reject malformed integer environment variables ([4e79f2c](https://github.com/gsdevme/solis-inverter-manager/commit/4e79f2c5656bd51dac4d2f50f9e09e121bccd190))
+* **homeassistant:** rename the boost select to "Boost control" ([208ba4e](https://github.com/gsdevme/solis-inverter-manager/commit/208ba4ec77aade0dba11394ec088bfed343c15e8))
+
 ## [2.3.0](https://github.com/gsdevme/solis-inverter-manager/compare/v2.2.0...v2.3.0) (2026-09-14)
 
 
