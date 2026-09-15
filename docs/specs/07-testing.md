@@ -13,12 +13,12 @@ Nothing in any suite needs an inverter, a datalogger, an MQTT broker or a networ
 
 ## Unit tests (`REQ-TS-01`)
 
-29 `*_test.go` files, excluded from `./features/...` by `make test` so the fast loop
+31 `*_test.go` files, excluded from `./features/...` by `make test` so the fast loop
 stays fast:
 
 | Package | Files | Coverage |
 |---|---|---|
-| `internal/inverter` | 8 | Register decode/encode: block addressing, RTC, work-mode bitfield, amps, timed slots, live fixtures, the write probe |
+| `internal/inverter` | 10 | Register decode/encode: block addressing, RTC, work-mode bitfield, amps, timed slots, live fixtures, the write probe, the BMS fault bitfields, the status label table |
 | `internal/controls` | 6 | The read-before-write guard, command routing/validation, locking, the schedule reconcile, setpoint reads, the fake holding bank |
 | `internal/homeassistant` | 3 | Discovery payload shape, the entity catalogue, the state document |
 | `internal/cmd` | 3 | Setpoint freshness gating, the built state document, the serve seams: the reconnect republish order and re-subscribe (`REQ-HA-05`/`REQ-HA-11`), the single teardown path and its two exit branches (`REQ-LC-10`), the sidecar startup wait (`REQ-LC-11`), the setpoints-reuse state reader (`REQ-SC-03`) |
@@ -42,13 +42,13 @@ behaviour (fc06 accepted, no ~120 s revert, `43024` acked-but-ignored).
 
 ## Acceptance suite (`features/`) (`REQ-TS-03`)
 
-godog, run by `go test ./features/...` / `make test-e2e`. **30 scenarios** across six
+godog, run by `go test ./features/...` / `make test-e2e`. **31 scenarios** across six
 feature files sharing one `features/steps_test.go`:
 
 | Feature file | Scenarios | Subject |
 |---|---|---|
 | `health.feature` | 2 | `/healthz`, `/readyz` transitions |
-| `mqtt_discovery.feature` | 4 | Retained discovery configs, availability `online`/`offline` |
+| `mqtt_discovery.feature` | 5 | Retained discovery configs, availability `online`/`offline` |
 | `mqtt_controls.feature` | 6 | Command topics, validation, the guarded write path |
 | `polling.feature` | 3 | Retry/backoff, the retained last-good cache, readiness |
 | `schedule.feature` | 2 | Derived `tou_window` / `boost` / `boost_ends_at` |

@@ -17,9 +17,11 @@ type RegisterReader interface {
 // Input register bank addressing. The live Solarman datalogger NAKs any single
 // read wider than ~100 registers with illegal_address (probed: 33022+100 OK,
 // 33022+110 NAK) — a stricter bound than the sidecar's 125-register wire cap
-// (docs/specs/01-sidecar-contract.md). So the telemetry bank (33022–33175) is read
+// (docs/specs/01-sidecar-contract.md). So the telemetry bank (33022–33214) is read
 // as two blocks, both ≤ maxReadRegisters, split at 33121|33122 so no multi-word
-// value (the 6-word RTC block and the U32/S32 pairs) straddles the boundary.
+// value (the 6-word RTC block and the U32/S32 pairs) straddles the boundary. The
+// second block runs to 33214 to take in the SOC-threshold mirrors, still inside
+// the single-read cap and still one round trip.
 // Snapshot resolves every register by absolute address across the blocks, so the
 // two reads need no merging or reordering.
 const (
@@ -28,8 +30,12 @@ const (
 	block1Base  = 33022
 	block1Count = maxReadRegisters // 100, covers 33022–33121
 	block2Base  = 33122
-	block2Count = 54 // covers 33122–33175
+	block2Count = 93 // covers 33122–33214
 )
+
+// Compile-time guard: widening block 2 past the datalogger's single-read cap
+// underflows this unsigned conversion and fails the build.
+const _ = uint(maxReadRegisters - block2Count)
 
 // Collect reads the two input register blocks and decodes them into Telemetry.
 // It is the reusable read→decode unit the Phase 6 scheduler calls unchanged.

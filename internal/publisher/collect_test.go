@@ -43,7 +43,7 @@ func TestCollectTwoBlocks(t *testing.T) {
 		t.Fatalf("Collect: %v", err)
 	}
 
-	wantCalls := []readCall{{33022, 100}, {33122, 54}}
+	wantCalls := []readCall{{33022, 100}, {33122, 93}}
 	if len(f.calls) != len(wantCalls) {
 		t.Fatalf("ReadInput called %d times, want %d: %v", len(f.calls), len(wantCalls), f.calls)
 	}

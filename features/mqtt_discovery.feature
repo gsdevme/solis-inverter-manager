@@ -20,6 +20,11 @@ Feature: MQTT / Home Assistant discovery pipeline
     And the state document contains the keys "battery_soc,grid_power,rtc"
     And the state document reports battery_soc as 42
 
+  Scenario: State carries the BMS fault, SOC-threshold and status-text diagnostics
+    When a poll is collected and state is published
+    Then a retained state document is published at the state topic
+    And the state document contains the keys "bms_fault_1,bms_over_voltage,overdischarge_soc,force_charge_soc,status_text"
+
   Scenario: Availability reports online retained
     When availability is published as online
     Then a retained "online" message is published at the availability topic

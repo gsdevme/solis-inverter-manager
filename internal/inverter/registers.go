@@ -7,8 +7,9 @@ package inverter
 //
 // Only registers the spec's input/holding tables confirm are named here. The
 // deferred set (serial ASCII, model/firmware, the 43090–43122 threshold table,
-// the 43024/43025 SOC pair, and various limit/config registers) is out of scope
-// until a later phase confirms its decode.
+// the 43024/43025 SOC pair, and various limit/config registers — 33181–33217
+// apart from the SOC mirrors 33213/33214 named below, and 43012–43049 apart from
+// 43018) is out of scope until a later phase confirms its decode.
 
 // Input registers (fc04, read-only).
 const (
@@ -59,6 +60,12 @@ const (
 	RegBMSChargeCurrentLimit    = 33143 // U16, ÷10 A
 	RegBMSDischargeCurrentLimit = 33144 // U16, ÷10 A
 
+	// RegBMSFault1 and RegBMSFault2 are the two BMS fault/protection bitfields.
+	// They are the only register evidence distinguishing a finished charge from a
+	// pack protection; see bmsfault.go for the bit map.
+	RegBMSFault1 = 33145 // U16 bitfield
+	RegBMSFault2 = 33146 // U16 bitfield
+
 	RegHouseLoadPower = 33147
 
 	// RegBatteryPower is the MSW of the 32-bit battery power in watts, reported as
@@ -73,6 +80,12 @@ const (
 	RegGridImportToday             = 33171
 	RegGridTotalExportEnergy       = 33173 // MSW of U32 kWh
 	RegGridExportToday             = 33175
+
+	// RegOverdischargeSOC and RegForceChargeSOC are read-only input mirrors of the
+	// inverter's own SOC settings (holding 43011 and 43018): the SOC it stops
+	// discharging at and the SOC at which it force-charges from the grid.
+	RegOverdischargeSOC = 33213 // U16, ×1 %
+	RegForceChargeSOC   = 33214 // U16, ×1 %
 )
 
 // Holding registers (fc03 read / fc06 write).
@@ -81,13 +94,16 @@ const (
 	// block corrects the inverter clock. Mirrors input RegRTCRead.
 	RegRTCSet = 43000
 
-	// RegMinSOC and the RegChargeDischarge*/RegInstantCurrent group below are
-	// probe-confirmed in docs/phase0/findings.md but not wired to any code path:
-	// nothing reads or writes them today. They are retained deliberately,
-	// reserved for the planned expansion of coverage to the whole inverter Modbus
-	// map, so the confirmed addresses are not lost and do not have to be
-	// re-probed against live hardware.
-	RegMinSOC = 43011
+	// RegMinSOC, RegForceChargeSOCSetting and the
+	// RegChargeDischarge*/RegInstantCurrent group below are probe-confirmed in
+	// docs/phase0/findings.md but not wired to any code path: nothing reads or
+	// writes them today. They are retained deliberately, reserved for the planned
+	// expansion of coverage to the whole inverter Modbus map, so the confirmed
+	// addresses are not lost and do not have to be re-probed against live
+	// hardware. Both SOC settings are readable through their input mirrors
+	// RegOverdischargeSOC and RegForceChargeSOC, which is what telemetry uses.
+	RegMinSOC                = 43011
+	RegForceChargeSOCSetting = 43018
 
 	// RegWorkMode is the energy-storage work-mode bitfield; reads back here and at
 	// RegWorkModeReadback.

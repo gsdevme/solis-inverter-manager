@@ -31,7 +31,7 @@ func TestPublishDiscovery(t *testing.T) {
 	}
 
 	topics := rec.Topics()
-	const wantCount = 42
+	const wantCount = 57
 	if len(topics) != wantCount {
 		t.Fatalf("discovery topic count = %d, want %d", len(topics), wantCount)
 	}

@@ -48,6 +48,20 @@ func (f fixture) snapshot() Snapshot {
 	return s
 }
 
+// snapshotWith returns f's blocks followed by the blocks of the named fixtures,
+// so a decode spanning registers one capture did not cover resolves from a
+// complementary one. Snapshot resolves an address against the first block that
+// contains it, so the receiver stays the source of truth for every register it
+// holds and the extra fixtures only fill gaps.
+func (f fixture) snapshotWith(t *testing.T, names ...string) Snapshot {
+	t.Helper()
+	s := f.snapshot()
+	for _, name := range names {
+		s = append(s, loadFixture(t, name).snapshot()...)
+	}
+	return s
+}
+
 // raw returns the raw register word at an absolute address, sourced from the
 // fixture's by_addr map — the arithmetic ground truth for expected values.
 func (f fixture) raw(t *testing.T, addr int) uint16 {

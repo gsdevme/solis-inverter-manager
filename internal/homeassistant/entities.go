@@ -124,6 +124,31 @@ func Entities() []Entity {
 		// as the pack fills, which is what explains a slow or stalled charge.
 		{Component: Sensor, Key: "bms_charge_current_limit", Name: "BMS charge current limit", DeviceClass: "current", StateClass: "measurement", Unit: "A", Category: "diagnostic", Precision: 1},
 		{Component: Sensor, Key: "bms_discharge_current_limit", Name: "BMS discharge current limit", DeviceClass: "current", StateClass: "measurement", Unit: "A", Category: "diagnostic", Precision: 1},
+		// The two raw BMS fault words, published alongside the per-bit sensors
+		// below so a fault can be reconciled against the vendor table even if a
+		// bit is mislabelled (see inverter/bmsfault.go).
+		{Component: Sensor, Key: "bms_fault_1", Name: "BMS fault word 1", Category: "diagnostic"},
+		{Component: Sensor, Key: "bms_fault_2", Name: "BMS fault word 2", Category: "diagnostic"},
+		// One problem-class binary sensor per decoded fault bit, so a protection
+		// event is a state in Home Assistant's history rather than a number a
+		// template has to pick apart.
+		{Component: BinarySensor, Key: "bms_over_voltage", Name: "BMS over voltage", DeviceClass: "problem", Category: "diagnostic"},
+		{Component: BinarySensor, Key: "bms_under_voltage", Name: "BMS under voltage", DeviceClass: "problem", Category: "diagnostic"},
+		{Component: BinarySensor, Key: "bms_over_temp", Name: "BMS over temperature", DeviceClass: "problem", Category: "diagnostic"},
+		{Component: BinarySensor, Key: "bms_under_temp", Name: "BMS under temperature", DeviceClass: "problem", Category: "diagnostic"},
+		{Component: BinarySensor, Key: "bms_charge_over_temp", Name: "BMS charge over temperature", DeviceClass: "problem", Category: "diagnostic"},
+		{Component: BinarySensor, Key: "bms_charge_under_temp", Name: "BMS charge under temperature", DeviceClass: "problem", Category: "diagnostic"},
+		{Component: BinarySensor, Key: "bms_discharge_over_current", Name: "BMS discharge over current", DeviceClass: "problem", Category: "diagnostic"},
+		{Component: BinarySensor, Key: "bms_charge_over_current", Name: "BMS charge over current", DeviceClass: "problem", Category: "diagnostic"},
+		{Component: BinarySensor, Key: "bms_internal_protection", Name: "BMS internal protection", DeviceClass: "problem", Category: "diagnostic"},
+		{Component: BinarySensor, Key: "bms_module_unbalanced", Name: "BMS module unbalanced", DeviceClass: "problem", Category: "diagnostic"},
+		// The inverter's own SOC settings, mirrored read-only on the input bank.
+		// Deliberately carry no StateClass: near-static configuration, so
+		// long-term statistics for them would be noise. No DeviceClass either:
+		// "battery" would make Home Assistant read a static threshold as the
+		// device's remaining charge, i.e. a permanent low-battery alert.
+		{Component: Sensor, Key: "overdischarge_soc", Name: "Over-discharge SOC", Unit: "%", Category: "diagnostic"},
+		{Component: Sensor, Key: "force_charge_soc", Name: "Force-charge SOC", Unit: "%", Category: "diagnostic"},
 
 		// PV.
 		{Component: Sensor, Key: "pv1_voltage", Name: "PV1 voltage", DeviceClass: "voltage", StateClass: "measurement", Unit: "V", Precision: 1},
@@ -155,6 +180,9 @@ func Entities() []Entity {
 
 		// System.
 		{Component: Sensor, Key: "status", Name: "Status", Category: "diagnostic"},
+		// The same enum as status, rendered through the vendor's display table so
+		// a fault is legible in history without a lookup.
+		{Component: Sensor, Key: "status_text", Name: "Status text", Category: "diagnostic"},
 		{Component: Sensor, Key: "operating_status", Name: "Operating status", Category: "diagnostic"},
 		{Component: Sensor, Key: "work_mode", Name: "Energy storage mode", Category: "diagnostic"},
 		{Component: Sensor, Key: "rtc", Name: "RTC", DeviceClass: "timestamp", Category: "diagnostic"},
