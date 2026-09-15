@@ -32,7 +32,8 @@ Config env vars mirror the Go `internal/config` names: `MODE` (`mock|live`,
 required), `INVERTER_IP`, `INVERTER_SERIAL` (datalogger serial, secret),
 `INVERTER_PORT` (default 8899), `INVERTER_SOCKET_TIMEOUT` (bare seconds or a Go
 duration, default 10s), `SIDECAR_LISTEN_ADDR` (default `:8081`), `MOCK_FIXTURE`
-(default the bundled full-sweep snapshot).
+(one path or several comma-separated; defaults to the bundled full-sweep plus
+comprehensive snapshots, which together cover the whole device).
 
 ## Develop
 

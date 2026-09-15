@@ -13,9 +13,13 @@ coverage.out
 .idea/
 *.swp
 
-# Python (legacy app, removed in a later phase)
-*/__pycache__/*
-__pycache__/*
+# Python
+# Bare "__pycache__/" matches at any depth; the old "*/__pycache__/*" only caught
+# one level, so sidecar/tests/__pycache__ slipped through.
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
 .pylintrc
 
 # Python virtualenv (sidecar, local only)

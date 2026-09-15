@@ -26,7 +26,7 @@ def _build_transport(cfg: Config):
     if cfg.mode == "mock":
         from .mock import MockTransport
 
-        return MockTransport(cfg.mock_fixture)
+        return MockTransport(cfg.mock_fixtures)
     from .transport import LiveTransport
 
     return LiveTransport(
@@ -51,7 +51,9 @@ def main() -> int:
 
     bind = f"{cfg.listen_host or '0.0.0.0'}:{cfg.listen_port}"
     if cfg.mode == "mock":
-        log.info("starting sidecar mode=mock listen=%s fixture=%s", bind, cfg.mock_fixture)
+        log.info(
+            "starting sidecar mode=mock listen=%s fixtures=%s", bind, ",".join(cfg.mock_fixtures)
+        )
     else:
         log.info(
             "starting sidecar mode=live listen=%s inverter=%s:%d serial=%s timeout=%ss",
