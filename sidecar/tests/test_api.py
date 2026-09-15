@@ -8,6 +8,7 @@ then exercises the endpoints over the wire.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import threading
 import urllib.error
@@ -16,6 +17,15 @@ from pathlib import Path
 
 import pytest
 
+from sidecar.errors import (
+    BadRequestError,
+    FrameError,
+    IllegalAddressError,
+    NotFoundError,
+    RequestTimeoutError,
+    SidecarError,
+    TransportConnectionError,
+)
 from sidecar.http_api import Handler, SidecarHTTPServer
 from sidecar.mock import MockTransport
 
@@ -28,10 +38,10 @@ FIXTURE = (
 )
 
 
-@pytest.fixture()
-def base_url():
-    transport = MockTransport(str(FIXTURE))
-    server = SidecarHTTPServer(("127.0.0.1", 0), Handler, transport, "mock")
+@contextlib.contextmanager
+def serving(transport, mode: str):
+    """Serve ``transport`` on an ephemeral port, yielding its base URL."""
+    server = SidecarHTTPServer(("127.0.0.1", 0), Handler, transport, mode)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     host, port = server.server_address
@@ -40,6 +50,12 @@ def base_url():
     finally:
         server.shutdown()
         server.server_close()
+
+
+@pytest.fixture()
+def base_url():
+    with serving(MockTransport(str(FIXTURE)), "mock") as url:
+        yield url
 
 
 def _post(base_url: str, path: str, payload: dict):
@@ -133,3 +149,74 @@ def test_unknown_route_404(base_url):
     status, body = _get(base_url, "/nope")
     assert status == 404
     assert body["error"]["code"] == "not_found"
+
+
+class RaisingTransport:
+    """LiveTransport-shaped stub whose every call raises a fixed exception."""
+
+    def __init__(self, exc: Exception):
+        self._exc = exc
+
+    def read_input(self, addr: int, count: int):
+        raise self._exc
+
+    def read_holding(self, addr: int, count: int):
+        raise self._exc
+
+    def write_holding(self, addr: int, value: int):
+        raise self._exc
+
+    def health(self) -> bool:
+        raise self._exc
+
+
+# The contract table in docs/specs/01-sidecar-contract.md: every wire code with
+# the HTTP status it must be served as. `internal_error` is the catch-all the
+# handler wraps any non-SidecarError exception in.
+TAXONOMY = [
+    (BadRequestError, "bad_request", 400),
+    (NotFoundError, "not_found", 404),
+    (SidecarError, "internal_error", 500),
+    (IllegalAddressError, "illegal_address", 502),
+    (FrameError, "frame_error", 502),
+    (TransportConnectionError, "connection_error", 503),
+    (RequestTimeoutError, "timeout", 504),
+]
+
+
+@pytest.mark.parametrize("cls,code,status", TAXONOMY)
+def test_error_taxonomy_matches_the_contract(cls, code, status):
+    err = cls("boom")
+    assert (err.code, err.status, err.message) == (code, status, "boom")
+
+
+@pytest.mark.parametrize(
+    "exc,code,status",
+    [
+        (RequestTimeoutError("boom"), "timeout", 504),
+        (IllegalAddressError("boom"), "illegal_address", 502),
+        (FrameError("boom"), "frame_error", 502),
+        (TransportConnectionError("boom"), "connection_error", 503),
+        # Anything that is not a SidecarError falls through to the 500 catch-all.
+        (RuntimeError("boom"), "internal_error", 500),
+    ],
+)
+def test_read_failures_map_to_the_error_envelope(exc, code, status):
+    with serving(RaisingTransport(exc), "live") as base_url:
+        got, body = _post(base_url, "/read_input", {"addr": 33022, "count": 1})
+    assert got == status
+    assert body == {"error": {"code": code, "message": "boom"}}
+
+
+def test_write_failures_map_to_the_error_envelope():
+    with serving(RaisingTransport(TransportConnectionError("boom")), "live") as base_url:
+        status, body = _post(base_url, "/write_holding", {"addr": 43141, "value": 340})
+    assert status == 503
+    assert body == {"error": {"code": "connection_error", "message": "boom"}}
+
+
+def test_health_failure_maps_to_the_error_envelope():
+    with serving(RaisingTransport(RuntimeError("boom")), "live") as base_url:
+        status, body = _get(base_url, "/health")
+    assert status == 500
+    assert body == {"error": {"code": "internal_error", "message": "boom"}}
