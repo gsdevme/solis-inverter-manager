@@ -185,6 +185,6 @@ registers"): product/model/firmware (33000–33003), inverter serial as ASCII
 (43034–43067), the protection-threshold table (43090–43113, 43119–43122 —
 ruled out as a schedule in Stage A, #27), the candidate force-charge/backup SOC
 pair (43024/43025, meaning unconfirmed; 43024 ignores fc06), and various
-limit/config registers (33181–33217, 43012–43049). Within that last range,
+limit/config registers (33181–33217, 43012–43049). Within the first of those,
 33206/33207 were ruled out as the BMS current-limit pair — they are constants
 (see `docs/phase0/findings.md` §"BMS current limits").
