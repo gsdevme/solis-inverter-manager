@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.5.0](https://github.com/gsdevme/solis-inverter-manager/compare/v2.4.0...v2.5.0) (2026-09-15)
+
+
+### Features
+
+* **inverter:** publish BMS fault bits, SOC thresholds and status text ([5a2cce2](https://github.com/gsdevme/solis-inverter-manager/commit/5a2cce22580b3effd98ff8b2a5da08c693c6baec))
+
 ## [2.4.0](https://github.com/gsdevme/solis-inverter-manager/compare/v2.3.1...v2.4.0) (2026-09-15)
 
 
