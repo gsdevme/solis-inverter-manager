@@ -388,3 +388,136 @@ func TestReconcileNilIsNoop(t *testing.T) {
 		t.Fatalf("health = (success %d, failure %d), want (1, 0)", succ, fail)
 	}
 }
+
+// blockingReader parks inside Read until release is closed, so a test can hold a
+// poll open across apiMu and observe what another goroutine can do meanwhile.
+// entered is closed on the first Read, once the poll is provably inside the
+// mutex.
+type blockingReader struct {
+	entered chan struct{}
+	release chan struct{}
+	once    sync.Once
+	mu      sync.Mutex
+	calls   int
+}
+
+func (r *blockingReader) Read(context.Context) (inverter.Telemetry, homeassistant.Setpoints, error) {
+	r.mu.Lock()
+	r.calls++
+	r.mu.Unlock()
+	r.once.Do(func() { close(r.entered) })
+	<-r.release
+	return inverter.Telemetry{}, homeassistant.Setpoints{}, nil
+}
+
+// blockingCommander parks inside Apply until release is closed, the mirror image
+// of blockingReader for the command side.
+type blockingCommander struct {
+	entered chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (c *blockingCommander) Apply(context.Context, string, []byte) {
+	c.once.Do(func() { close(c.entered) })
+	<-c.release
+}
+
+// exclusionWindow is how long a test waits before concluding that a goroutine
+// blocked on apiMu is genuinely blocked rather than merely unscheduled. It is
+// real time, not synctest time: a goroutine waiting on a sync.Mutex is not
+// durably blocked, so a synctest bubble would stall instead of advancing.
+const exclusionWindow = 50 * time.Millisecond
+
+// TestCommandWaitsForAnInFlightPoll pins REQ-SC-05 from the command side:
+// ApplyCommand takes the same apiMu as the poll, so an inbound command cannot
+// interleave its guarded write with a poll's Modbus frames — the sidecar's single
+// socket can only service one transaction at a time.
+func TestCommandWaitsForAnInFlightPoll(t *testing.T) {
+	r := &blockingReader{entered: make(chan struct{}), release: make(chan struct{})}
+	c := &fakeCommander{}
+	cfg := baseConfig()
+	cfg.MaxRetries = 0
+	s := New(r, &fakePublisher{}, &fakeHealth{}, nil, c, nil, cfg)
+
+	polled := make(chan struct{})
+	go func() { s.PollNow(context.Background()); close(polled) }()
+	<-r.entered // the poll now holds apiMu
+
+	applied := make(chan struct{})
+	go func() {
+		s.ApplyCommand(context.Background(), "solis/set_charge_current/set", []byte("5"))
+		close(applied)
+	}()
+
+	select {
+	case <-applied:
+		t.Fatal("ApplyCommand ran while a poll held apiMu; the write is not atomic against a poll")
+	case <-time.After(exclusionWindow):
+	}
+	c.mu.Lock()
+	during := c.calls
+	c.mu.Unlock()
+	if during != 0 {
+		t.Fatalf("commander ran %d times during the poll, want 0", during)
+	}
+
+	close(r.release)
+	select {
+	case <-applied:
+	case <-time.After(5 * time.Second):
+		t.Fatal("ApplyCommand never ran after the poll released apiMu")
+	}
+	<-polled
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.calls != 1 {
+		t.Fatalf("commander calls = %d after the poll finished, want 1", c.calls)
+	}
+}
+
+// TestPollWaitsForAnInFlightCommand pins the other direction of REQ-SC-05: a
+// command's guarded write + re-read + refresh completes before the next poll
+// reads, so a poll cannot publish a half-applied setpoint.
+func TestPollWaitsForAnInFlightCommand(t *testing.T) {
+	r := &fakeReader{soc: 40}
+	c := &blockingCommander{entered: make(chan struct{}), release: make(chan struct{})}
+	p := &fakePublisher{}
+	cfg := baseConfig()
+	cfg.MaxRetries = 0
+	s := New(r, p, &fakeHealth{}, nil, c, nil, cfg)
+
+	applied := make(chan struct{})
+	go func() {
+		s.ApplyCommand(context.Background(), "solis/set_charge_current/set", []byte("5"))
+		close(applied)
+	}()
+	<-c.entered // the command now holds apiMu
+
+	polled := make(chan struct{})
+	go func() { s.PollNow(context.Background()); close(polled) }()
+
+	select {
+	case <-polled:
+		t.Fatal("a poll ran while a command held apiMu; the command is not atomic against a poll")
+	case <-time.After(exclusionWindow):
+	}
+	r.mu.Lock()
+	during := r.calls
+	r.mu.Unlock()
+	if during != 0 {
+		t.Fatalf("reader ran %d times during the command, want 0", during)
+	}
+
+	close(c.release)
+	<-applied
+	select {
+	case <-polled:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the poll never ran after the command released apiMu")
+	}
+	if p.publishCount() != 1 {
+		t.Fatalf("publish count = %d after the command released apiMu, want 1", p.publishCount())
+	}
+}
