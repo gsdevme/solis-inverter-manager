@@ -21,15 +21,14 @@ type State struct {
 	// BatteryChargePower and BatteryDischargePower are the unsigned halves of
 	// BatteryPower, for Home Assistant integrations that meter each direction
 	// separately. Exactly one is non-zero at a time; see splitBatteryPower.
-	BatteryChargePower    float64 `json:"battery_charge_power"`
-	BatteryDischargePower float64 `json:"battery_discharge_power"`
-	BatteryCharging       bool    `json:"battery_charging"`
-	BatterySOC            float64 `json:"battery_soc"`
-	BatterySOH            float64 `json:"battery_soh"`
-	BMSVoltage            float64 `json:"bms_voltage"`
-	BMSCurrent            float64 `json:"bms_current"`
-	BMSChargeCurrentLimit float64 `json:"bms_charge_current_limit"`
-
+	BatteryChargePower       float64 `json:"battery_charge_power"`
+	BatteryDischargePower    float64 `json:"battery_discharge_power"`
+	BatteryCharging          bool    `json:"battery_charging"`
+	BatterySOC               float64 `json:"battery_soc"`
+	BatterySOH               float64 `json:"battery_soh"`
+	BMSVoltage               float64 `json:"bms_voltage"`
+	BMSCurrent               float64 `json:"bms_current"`
+	BMSChargeCurrentLimit    float64 `json:"bms_charge_current_limit"`
 	BMSDischargeCurrentLimit float64 `json:"bms_discharge_current_limit"`
 
 	PV1Voltage   float64 `json:"pv1_voltage"`

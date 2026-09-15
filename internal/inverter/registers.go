@@ -81,12 +81,12 @@ const (
 	// block corrects the inverter clock. Mirrors input RegRTCRead.
 	RegRTCSet = 43000
 
-	// RegMinSOC and the RegChargeDischarge*/RegInstantCurrent/RegMax*Current
-	// group below are probe-confirmed in docs/phase0/findings.md but not yet
-	// wired to any code path: nothing reads or writes them today. They are
-	// retained deliberately, reserved for the planned expansion of coverage to
-	// the whole inverter Modbus map, so the confirmed addresses are not lost and
-	// do not have to be re-probed against live hardware.
+	// RegMinSOC and the RegChargeDischarge*/RegInstantCurrent group below are
+	// probe-confirmed in docs/phase0/findings.md but not wired to any code path:
+	// nothing reads or writes them today. They are retained deliberately,
+	// reserved for the planned expansion of coverage to the whole inverter Modbus
+	// map, so the confirmed addresses are not lost and do not have to be
+	// re-probed against live hardware.
 	RegMinSOC = 43011
 
 	// RegWorkMode is the energy-storage work-mode bitfield; reads back here and at
@@ -97,8 +97,15 @@ const (
 	RegChargeDischargeEnable    = 43114
 	RegChargeDischargeDirection = 43115
 	RegInstantCurrent           = 43116
-	RegMaxChargeCurrent         = 43117
-	RegMaxDischargeCurrent      = 43118
+
+	// RegMaxChargeCurrent and RegMaxDischargeCurrent are the inverter's own
+	// configured ceiling, distinct from the BMS-advertised limits
+	// (RegBMSChargeCurrentLimit/RegBMSDischargeCurrentLimit) and from the
+	// timed-slot setpoints (RegTimedChargeCurrent/RegTimedDischargeCurrent).
+	// Read by controls.ReadSetpoints and published as read-only sensors; never
+	// written.
+	RegMaxChargeCurrent    = 43117 // U16, ÷10 A
+	RegMaxDischargeCurrent = 43118 // U16, ÷10 A
 
 	RegTimedChargeCurrent      = 43141 // U16, ÷10 A
 	RegTimedDischargeCurrent   = 43142 // U16, ÷10 A
