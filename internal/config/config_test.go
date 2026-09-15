@@ -244,3 +244,122 @@ func TestRedaction(t *testing.T) {
 		}
 	}
 }
+
+// TestNonNumericIntVarsFailValidation pins the fail-fast contract shared by every
+// integer env var: a non-numeric value is a validation error, not a silent
+// fallback to the default, matching the duration and bool readers.
+func TestNonNumericIntVarsFailValidation(t *testing.T) {
+	for _, key := range []string{"INVERTER_PORT", "POLL_MAX_RETRIES", "FAILURE_THRESHOLD"} {
+		t.Run(key, func(t *testing.T) {
+			setEnv(t, map[string]string{key: "abc"})
+			_, err := Load()
+			if err == nil {
+				t.Fatalf("Load() with %s=abc = nil error, want a parse error", key)
+			}
+			if want := key + " is not a valid integer"; !strings.Contains(err.Error(), want) {
+				t.Fatalf("error = %v, want it to contain %q", err, want)
+			}
+		})
+	}
+}
+
+// TestIntVarsAcceptValidValues guards the fail-fast change against over-reach:
+// well-formed values must still parse and reach the Config.
+func TestIntVarsAcceptValidValues(t *testing.T) {
+	setEnv(t, map[string]string{
+		"INVERTER_PORT":     "9000",
+		"POLL_MAX_RETRIES":  "0",
+		"FAILURE_THRESHOLD": "7",
+	})
+	c, err := Load()
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if c.InverterPort != 9000 {
+		t.Errorf("inverter port = %d, want 9000", c.InverterPort)
+	}
+	if c.PollMaxRetries != 0 {
+		t.Errorf("poll max retries = %d, want 0", c.PollMaxRetries)
+	}
+	if c.FailureThreshold != 7 {
+		t.Errorf("failure threshold = %d, want 7", c.FailureThreshold)
+	}
+}
+
+// TestTOUWindowSetTracksProvenance pins REQ-CF-07's set/unset distinction: the
+// default window is non-empty, so TOUWindowSet is the only thing that separates
+// "the operator asked for a window" from "nobody said anything".
+func TestTOUWindowSetTracksProvenance(t *testing.T) {
+	tests := []struct {
+		name       string
+		env        map[string]string
+		wantWindow string
+		wantSet    bool
+	}{
+		{name: "unset takes the default", env: nil, wantWindow: "23:30-05:30", wantSet: false},
+		{name: "set explicitly", env: map[string]string{"TOU_WINDOW": "22:00-06:00"}, wantWindow: "22:00-06:00", wantSet: true},
+		{name: "set to empty disables assertion", env: map[string]string{"TOU_WINDOW": ""}, wantWindow: "", wantSet: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			setEnv(t, tc.env)
+			c, err := Load()
+			if err != nil {
+				t.Fatalf("load: %v", err)
+			}
+			if c.TOUWindow != tc.wantWindow {
+				t.Errorf("tou window = %q, want %q", c.TOUWindow, tc.wantWindow)
+			}
+			if c.TOUWindowSet != tc.wantSet {
+				t.Errorf("tou window set = %t, want %t", c.TOUWindowSet, tc.wantSet)
+			}
+		})
+	}
+}
+
+// TestControlsEnabled pins REQ-CF-10: the write path is on unless an operator
+// explicitly turns it off, and a value that is neither true nor false is a
+// validation error rather than a silent fall back to the default — a typo in
+// CONTROLS_ENABLED must not quietly re-enable writes to a flash-backed register.
+func TestControlsEnabled(t *testing.T) {
+	tests := []struct {
+		name    string
+		value   string
+		want    bool
+		wantErr bool
+	}{
+		{name: "absent defaults to enabled", value: "", want: true},
+		{name: "explicit true", value: "true", want: true},
+		{name: "explicit false", value: "false"},
+		{name: "numeric false", value: "0"},
+		{name: "invalid rejected", value: "yes please", wantErr: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			setEnv(t, map[string]string{"CONTROLS_ENABLED": tc.value})
+			c, err := Load()
+			if tc.wantErr {
+				if err == nil || !strings.Contains(err.Error(), "CONTROLS_ENABLED") {
+					t.Fatalf("Load() with CONTROLS_ENABLED=%q = %v, want a CONTROLS_ENABLED validation error", tc.value, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("load: %v", err)
+			}
+			if c.ControlsEnabled != tc.want {
+				t.Errorf("controls enabled = %t, want %t", c.ControlsEnabled, tc.want)
+			}
+		})
+	}
+}
+
+// TestNegativePollMaxRetries pins the other half of REQ-CF-05's range rule
+// (FAILURE_THRESHOLD >= 1 is covered above): a negative retry budget is
+// nonsensical and must be rejected, not clamped somewhere downstream.
+func TestNegativePollMaxRetries(t *testing.T) {
+	setEnv(t, map[string]string{"POLL_MAX_RETRIES": "-1"})
+	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "POLL_MAX_RETRIES must be >= 0") {
+		t.Fatalf("expected POLL_MAX_RETRIES range error, got %v", err)
+	}
+}

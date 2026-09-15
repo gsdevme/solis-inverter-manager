@@ -95,6 +95,15 @@ type Config struct {
 	// schedule.ParseToUWindow for parsing.
 	TOUWindow string
 
+	// TOUWindowSet records whether TOU_WINDOW was actually present in the
+	// environment, as opposed to defaulted. The default window is non-empty, so
+	// this is the only way to tell "the operator asked for a window" from "nobody
+	// said anything" — the distinction REQ-CF-07's controls-disabled startup
+	// warning turns on. It is deliberately absent from String() and LogValue():
+	// it is provenance rather than configuration, and TOUWindow already reports
+	// the effective value.
+	TOUWindowSet bool
+
 	// Health & logging
 	HealthAddr string
 	LogLevel   string
@@ -155,10 +164,13 @@ func Load() (*Config, error) {
 			c.HAObjectIDPrefix, objectIDPrefixPattern))
 	}
 
-	c.InverterPort = getInt("INVERTER_PORT", 8899)
-	if c.InverterPort < 1 || c.InverterPort > 65535 {
-		errs = append(errs, fmt.Errorf("INVERTER_PORT %d is out of range 1-65535", c.InverterPort))
+	port, err := parseInt("INVERTER_PORT", 8899)
+	if err != nil {
+		errs = append(errs, err)
+	} else if port < 1 || port > 65535 {
+		errs = append(errs, fmt.Errorf("INVERTER_PORT %d is out of range 1-65535", port))
 	}
+	c.InverterPort = port
 
 	socketTimeout, err := parseDurationOrSeconds("INVERTER_SOCKET_TIMEOUT", 10*time.Second)
 	if err != nil {
@@ -184,14 +196,21 @@ func Load() (*Config, error) {
 	}
 	c.PollInterval = interval
 
-	c.PollMaxRetries = getInt("POLL_MAX_RETRIES", 3)
-	if c.PollMaxRetries < 0 {
+	maxRetries, err := parseInt("POLL_MAX_RETRIES", 3)
+	if err != nil {
+		errs = append(errs, err)
+	} else if maxRetries < 0 {
 		errs = append(errs, errors.New("POLL_MAX_RETRIES must be >= 0"))
 	}
-	c.FailureThreshold = getInt("FAILURE_THRESHOLD", 3)
-	if c.FailureThreshold < 1 {
+	c.PollMaxRetries = maxRetries
+
+	failureThreshold, err := parseInt("FAILURE_THRESHOLD", 3)
+	if err != nil {
+		errs = append(errs, err)
+	} else if failureThreshold < 1 {
 		errs = append(errs, errors.New("FAILURE_THRESHOLD must be >= 1"))
 	}
+	c.FailureThreshold = failureThreshold
 
 	controlsEnabled, err := parseBool("CONTROLS_ENABLED", true)
 	if err != nil {
@@ -205,6 +224,7 @@ func Load() (*Config, error) {
 	c.TOUWindow = defaultToUWindow
 	if v, ok := os.LookupEnv("TOU_WINDOW"); ok {
 		c.TOUWindow = v
+		c.TOUWindowSet = true
 	}
 	if _, _, err := schedule.ParseToUWindow(c.TOUWindow); err != nil {
 		errs = append(errs, fmt.Errorf("TOU_WINDOW: %w", err))
@@ -304,16 +324,21 @@ func getEnv(key, def string) string {
 	return def
 }
 
-func getInt(key string, def int) int {
+// parseInt parses an integer env var. An empty/unset value returns the default;
+// an unparseable value is a validation error, so a typo such as
+// FAILURE_THRESHOLD=abc fails fast rather than silently resolving to the default.
+// The default is still returned alongside the error so the caller's range check
+// cannot raise a second, misleading complaint about the same variable.
+func parseInt(key string, def int) (int, error) {
 	v := os.Getenv(key)
 	if v == "" {
-		return def
+		return def, nil
 	}
-	n, err := strconv.Atoi(v)
+	n, err := strconv.Atoi(strings.TrimSpace(v))
 	if err != nil {
-		return def
+		return def, fmt.Errorf("%s is not a valid integer: %w", key, err)
 	}
-	return n
+	return n, nil
 }
 
 // parseBool parses a boolean env var (via strconv.ParseBool, so 1/t/true/0/f/
