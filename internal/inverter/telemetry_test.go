@@ -25,6 +25,8 @@ func TestDecodeTelemetryComprehensive(t *testing.T) {
 		assertFloat(t, "soh", tel.Battery.SOHPercent, float64(f.raw(t, RegBatterySOH)))
 		assertFloat(t, "bms_voltage", tel.Battery.BMSVoltageV, float64(f.raw(t, RegBMSBatteryVoltage))/100)
 		assertFloat(t, "bms_current", tel.Battery.BMSCurrentA, float64(int16(f.raw(t, RegBMSBatteryCurrent)))/10)
+		assertFloat(t, "bms_charge_limit", tel.Battery.BMSChargeCurrentLimitA, float64(f.raw(t, RegBMSChargeCurrentLimit))/10)
+		assertFloat(t, "bms_discharge_limit", tel.Battery.BMSDischargeCurrentLimitA, float64(f.raw(t, RegBMSDischargeCurrentLimit))/10)
 		wantPower := float64(int32(uint32(f.raw(t, RegBatteryPower))<<16 | uint32(f.raw(t, RegBatteryPower+1))))
 		assertFloat(t, "power", tel.Battery.PowerW, wantPower)
 		if !tel.Battery.Charging {
@@ -109,6 +111,8 @@ func TestDecodeTelemetryAnchors(t *testing.T) {
 	assertFloat(t, "soc", tel.Battery.SOCPercent, 99)
 	assertFloat(t, "soh", tel.Battery.SOHPercent, 97)
 	assertFloat(t, "bms voltage", tel.Battery.BMSVoltageV, 51.05)
+	assertFloat(t, "bms charge current limit", tel.Battery.BMSChargeCurrentLimitA, 15.0)
+	assertFloat(t, "bms discharge current limit", tel.Battery.BMSDischargeCurrentLimitA, 112.5)
 	assertFloat(t, "pv1 voltage", tel.PV.PV1VoltageV, 205.8)
 	assertFloat(t, "pv1 current", tel.PV.PV1CurrentA, 2.9)
 	assertFloat(t, "pv2 voltage", tel.PV.PV2VoltageV, 201.0)
@@ -207,4 +211,38 @@ func TestDecodeTelemetryBatteryDirection(t *testing.T) {
 			assertFloat(t, "power", tel.Battery.PowerW, tc.wantPowerW)
 		})
 	}
+}
+
+// TestBMSCurrentLimitsProbeFixture pins the 2026-09-15 read-only probe, whose
+// capture was confirmed against the Solis app showing 0 A charge / 112.5 A
+// discharge for the BMS. It is the ground truth for both the addressing and the
+// ÷10 scale, and it is a different pack state (SOC 100 %, idle) from the
+// comprehensive fixture, so together they prove the charge limit tracks the pack
+// rather than being a constant.
+func TestBMSCurrentLimitsProbeFixture(t *testing.T) {
+	s := loadFixture(t, "bms-limit-probe.json").snapshot()
+
+	charge, err := s.U16(RegBMSChargeCurrentLimit)
+	if err != nil {
+		t.Fatalf("read %d: %v", RegBMSChargeCurrentLimit, err)
+	}
+	discharge, err := s.U16(RegBMSDischargeCurrentLimit)
+	if err != nil {
+		t.Fatalf("read %d: %v", RegBMSDischargeCurrentLimit, err)
+	}
+	assertFloat(t, "bms charge current limit", div10(float64(charge)), 0)
+	assertFloat(t, "bms discharge current limit", div10(float64(discharge)), 112.5)
+
+	// The inverter's own ceiling, re-confirmed in the same probe and distinct
+	// from both the BMS limits above and the timed setpoints 43141/43142.
+	maxCharge, err := s.U16(RegMaxChargeCurrent)
+	if err != nil {
+		t.Fatalf("read %d: %v", RegMaxChargeCurrent, err)
+	}
+	maxDischarge, err := s.U16(RegMaxDischargeCurrent)
+	if err != nil {
+		t.Fatalf("read %d: %v", RegMaxDischargeCurrent, err)
+	}
+	assertFloat(t, "inverter max charge current", DecodeAmps(maxCharge), 100)
+	assertFloat(t, "inverter max discharge current", DecodeAmps(maxDischarge), 100)
 }

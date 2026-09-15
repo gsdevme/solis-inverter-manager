@@ -32,7 +32,13 @@ type Battery struct {
 	SOHPercent  float64 // 33140
 	BMSVoltageV float64 // 33141, ÷100 V
 	BMSCurrentA float64 // 33142 S16, ÷10 A
-	PowerW      float64 // 33149·33150, W, magnitude signed by 33135 (+ = charge, − = discharge)
+	// BMSChargeCurrentLimitA and BMSDischargeCurrentLimitA are the ceilings the
+	// BMS advertises, not readings: the charge limit tapers towards 0 as the pack
+	// fills. Both are unsigned magnitudes — the 33135 direction flag does not
+	// apply to a limit.
+	BMSChargeCurrentLimitA    float64 // 33143, ÷10 A
+	BMSDischargeCurrentLimitA float64 // 33144, ÷10 A
+	PowerW                    float64 // 33149·33150, W, magnitude signed by 33135 (+ = charge, − = discharge)
 }
 
 // PV holds the decoded photovoltaic (DC) values.
@@ -170,7 +176,11 @@ func DecodeTelemetry(s Snapshot) (Telemetry, error) {
 		SOHPercent:  float64(r.u16(RegBatterySOH)),
 		BMSVoltageV: div100(float64(r.u16(RegBMSBatteryVoltage))),
 		BMSCurrentA: div10(float64(r.s16(RegBMSBatteryCurrent))),
-		PowerW:      signedByDirection(float64(r.s32(RegBatteryPower)), charging),
+
+		BMSChargeCurrentLimitA:    div10(float64(r.u16(RegBMSChargeCurrentLimit))),
+		BMSDischargeCurrentLimitA: div10(float64(r.u16(RegBMSDischargeCurrentLimit))),
+
+		PowerW: signedByDirection(float64(r.s32(RegBatteryPower)), charging),
 	}
 
 	t.PV = PV{

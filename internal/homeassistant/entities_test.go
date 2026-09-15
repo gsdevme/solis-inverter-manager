@@ -8,6 +8,7 @@ var wantKeys = []string{
 	"battery_voltage", "battery_current", "battery_power",
 	"battery_charge_power", "battery_discharge_power", "battery_charging",
 	"battery_soc", "battery_soh", "bms_voltage", "bms_current",
+	"bms_charge_current_limit", "bms_discharge_current_limit",
 	"pv1_voltage", "pv1_current", "pv2_voltage", "pv2_current", "pv_total_power",
 	"grid_power", "grid_total_import", "grid_import_today", "grid_total_export", "grid_export_today",
 	"ac_active_power", "inverter_temperature", "grid_frequency", "house_load",
@@ -15,6 +16,7 @@ var wantKeys = []string{
 	"battery_total_discharge", "battery_discharge_today",
 	"status", "operating_status", "work_mode", "rtc", "rtc_drift",
 	"tou_window", "boost", "boost_ends_at",
+	"inverter_max_charge_current", "inverter_max_discharge_current",
 	"set_charge_current", "set_discharge_current", "optimal_income", "boost_select", "rtc_sync",
 }
 

@@ -28,6 +28,9 @@ type State struct {
 	BatterySOH            float64 `json:"battery_soh"`
 	BMSVoltage            float64 `json:"bms_voltage"`
 	BMSCurrent            float64 `json:"bms_current"`
+	BMSChargeCurrentLimit float64 `json:"bms_charge_current_limit"`
+
+	BMSDischargeCurrentLimit float64 `json:"bms_discharge_current_limit"`
 
 	PV1Voltage   float64 `json:"pv1_voltage"`
 	PV1Current   float64 `json:"pv1_current"`
@@ -71,6 +74,9 @@ type State struct {
 
 	SetChargeCurrent    float64 `json:"set_charge_current"`
 	SetDischargeCurrent float64 `json:"set_discharge_current"`
+	// The inverter's configured ceiling, read-only (holding 43117/43118).
+	InverterMaxChargeCurrent    float64 `json:"inverter_max_charge_current"`
+	InverterMaxDischargeCurrent float64 `json:"inverter_max_discharge_current"`
 	// OptimalIncome is the select's option: "Run" or "Stop".
 	OptimalIncome string `json:"optimal_income"`
 }
@@ -84,6 +90,10 @@ type State struct {
 type Setpoints struct {
 	SetChargeCurrent    float64
 	SetDischargeCurrent float64
+	// MaxChargeCurrent and MaxDischargeCurrent are the inverter's own configured
+	// ceiling (holding 43117/43118), published read-only.
+	MaxChargeCurrent    float64
+	MaxDischargeCurrent float64
 	// OptimalIncome is the work-mode timed bit: true publishes the select's
 	// "Run" option, false its "Stop".
 	OptimalIncome bool
@@ -112,6 +122,9 @@ func (c Config) BuildState(t inverter.Telemetry, drift time.Duration, sp Setpoin
 		BatterySOH:            t.Battery.SOHPercent,
 		BMSVoltage:            t.Battery.BMSVoltageV,
 		BMSCurrent:            t.Battery.BMSCurrentA,
+
+		BMSChargeCurrentLimit:    t.Battery.BMSChargeCurrentLimitA,
+		BMSDischargeCurrentLimit: t.Battery.BMSDischargeCurrentLimitA,
 
 		PV1Voltage:   t.PV.PV1VoltageV,
 		PV1Current:   t.PV.PV1CurrentA,
@@ -150,7 +163,10 @@ func (c Config) BuildState(t inverter.Telemetry, drift time.Duration, sp Setpoin
 
 		SetChargeCurrent:    sp.SetChargeCurrent,
 		SetDischargeCurrent: sp.SetDischargeCurrent,
-		OptimalIncome:       optimalIncome,
+
+		InverterMaxChargeCurrent:    sp.MaxChargeCurrent,
+		InverterMaxDischargeCurrent: sp.MaxDischargeCurrent,
+		OptimalIncome:               optimalIncome,
 	}
 	body, err := json.Marshal(st)
 	if err != nil {

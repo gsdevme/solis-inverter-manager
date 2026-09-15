@@ -49,7 +49,17 @@ const (
 	RegBatterySOH        = 33140
 	RegBMSBatteryVoltage = 33141 // U16, ÷100 V
 	RegBMSBatteryCurrent = 33142 // S16, ÷10 A
-	RegHouseLoadPower    = 33147
+
+	// RegBMSChargeCurrentLimit and RegBMSDischargeCurrentLimit are the ceilings the
+	// BMS currently advertises, not readings: the charge limit tapers to 0 as the
+	// pack fills (15.0 A at SOC 99 %, 0.0 A at SOC 100 %), while the discharge
+	// limit holds steady. They are distinct from the inverter's own configured
+	// ceiling (RegMaxChargeCurrent/RegMaxDischargeCurrent) and from the timed-slot
+	// setpoints (RegTimedChargeCurrent/RegTimedDischargeCurrent).
+	RegBMSChargeCurrentLimit    = 33143 // U16, ÷10 A
+	RegBMSDischargeCurrentLimit = 33144 // U16, ÷10 A
+
+	RegHouseLoadPower = 33147
 
 	// RegBatteryPower is the MSW of the 32-bit battery power in watts, reported as
 	// a magnitude; direction comes from 33135.

@@ -164,12 +164,13 @@ confirm.
   neither the 6-word RTC block nor any U32/S32 pair, and `Snapshot` resolves across both
   blocks (REQ-RM-01), so the two reads need no merging.
   → `publisher/collect.go`, `docs/phase0/findings.md` ambiguity #10
-- **REQ-RM-13** *(reserved)* Six probe-confirmed holding constants are **named but not
+- **REQ-RM-13** *(reserved)* Four probe-confirmed holding constants are **named but not
   yet wired** into decode, publish or any write path: `RegMinSOC` (43011),
-  `RegChargeDischargeEnable` (43114), `RegChargeDischargeDirection` (43115),
-  `RegInstantCurrent` (43116), `RegMaxChargeCurrent` (43117) and
-  `RegMaxDischargeCurrent` (43118). Naming them is deliberate — they are confirmed
+  `RegChargeDischargeEnable` (43114), `RegChargeDischargeDirection` (43115) and
+  `RegInstantCurrent` (43116). Naming them is deliberate — they are confirmed
   ground truth — but giving any of them behaviour needs its own requirement.
+  `RegMaxChargeCurrent` (43117) and `RegMaxDischargeCurrent` (43118) left this
+  reserved set in REQ-RM-15 — they are now read and published, still never written.
   → `inverter/registers.go`
 - **REQ-RM-14** *(deferred scope)* Registers findings.md captures that `internal/inverter`
   deliberately does **not** model yet: product/model/firmware `33000–33003`, inverter
@@ -183,11 +184,22 @@ confirm.
   → `inverter/registers.go` (scope note),
   `docs/phase0/findings.md` §"Additional registers captured"
 
+- **REQ-RM-15** Current ceilings are decoded as three distinct pairs and never conflated:
+  the **BMS-advertised** limits `RegBMSChargeCurrentLimit` (33143) /
+  `RegBMSDischargeCurrentLimit` (33144), U16 `÷10` A, unsigned (the 33135 direction flag
+  does not apply to a limit) — the charge limit tapers towards 0 as the pack fills; the
+  **inverter-configured** ceiling `RegMaxChargeCurrent` (43117) /
+  `RegMaxDischargeCurrent` (43118), read via the setpoint block and published read-only,
+  **never written**; and the **timed-slot** setpoints 43141/43142 (REQ-HA-08), the only
+  writable pair. Both new pairs fall inside blocks already read, so they add no Modbus
+  traffic. Confirmed against the Solis app on 2026-09-15 (0 A charge / 112.5 A discharge).
+  → `inverter/registers.go`, `inverter/telemetry.go`, `controls/setpoints.go`,
+  `docs/phase0/findings.md` §"BMS current limits", ambiguity #14
 ## MQTT & Home Assistant (`internal/mqtt`, `internal/homeassistant`, `internal/publisher`)
 
 Phase 4 (#20/#21) is **read-only** discovery + state + availability. See
 [`03-mqtt-ha-discovery.md`](03-mqtt-ha-discovery.md) for the full topic scheme,
-payload shapes and the 38-entity table.
+payload shapes and the 42-entity table.
 
 - **REQ-HA-01** Discovery: one **retained**, QoS-1 config per entity at
   `<HA_DISCOVERY_PREFIX>/<component>/<serial>_<key>/config` (object_id form);
@@ -199,9 +211,9 @@ payload shapes and the 38-entity table.
 - **REQ-HA-02** State: a single **retained**, QoS-1 JSON document at `<base>/state`;
   every entity reads it via `value_template {{ value_json.<key> }}` (binary_sensor
   via `{{ 'ON' if value_json.<key> else 'OFF' }}`); the state DTO's json tags are
-  the 38 read-only entity keys plus the four control-readback fields
+  the 42 read-only entity keys plus the four control-readback fields
   (`set_charge_current`, `set_discharge_current`, `optimal_income`,
-  `boost_select`) — 42 tags.
+  `boost_select`) — 46 tags.
   `rtc` is RFC3339; `rtc_drift` is seconds.
   → `homeassistant/state.go`, `homeassistant/entities.go`
 - **REQ-HA-03** Entity classes per the `03` table; **daily** energy counters use
@@ -369,6 +381,19 @@ See the write-path sections of
   concurrency-safe last-message-per-topic fake the unit tests and the acceptance suite
   assert MQTT output against without a broker (REQ-TS-03).
   → `publisher/publisher.go`, `publisher/recording.go`, `cmd/serve.go`
+- **REQ-HA-21** Four read-only current-ceiling sensors publish the pairs of REQ-RM-15,
+  all `device_class: current`, `entity_category: diagnostic`, unit `A`, precision 1:
+  `bms_charge_current_limit` / `bms_discharge_current_limit` (from telemetry) carry
+  `state_class: measurement` because they move with pack state;
+  `inverter_max_charge_current` / `inverter_max_discharge_current` (from the setpoint
+  block) carry **no** `state_class`, being near-static configuration for which long-term
+  statistics would be noise. They are read-only and are published whether or not
+  `CONTROLS_ENABLED` is set. The pre-existing `set_charge_current` /
+  `set_discharge_current` are relabelled "Timed charge/discharge current" so the three
+  tiers are distinguishable in the UI; their **keys are unchanged**, so `unique_id`,
+  `object_id` and every entity id are untouched.
+  → `homeassistant/entities.go`, `homeassistant/state.go`, `controls/setpoints.go`,
+  `cmd/serve.go`
 
 ## Scheduling (`internal/scheduler`, `04-polling-scheduling.md`)
 
