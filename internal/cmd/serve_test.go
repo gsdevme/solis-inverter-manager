@@ -2,11 +2,17 @@ package cmd
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -671,5 +677,325 @@ func TestStateReaderFailsWhenTelemetryFails(t *testing.T) {
 
 	if !errors.Is(err, boom) {
 		t.Fatalf("read = %v, want it to wrap %v", err, boom)
+	}
+}
+
+// serveFixtureName is the Phase 0 capture the fake sidecar seeds its registers
+// from, so a poll driven by runServe decodes real live values rather than zeros.
+const serveFixtureName = "live-snapshot-comprehensive.json"
+
+// serveFixtureRow is the status-page table row the fixture's battery SOC (input
+// register 33139 = 99) must end up rendering as. Asserting the rendered row —
+// rather than merely "a reading exists" — proves the words the fake sidecar
+// served travelled the whole pipeline: sidecar client, decode, state document,
+// statePublisher and the page.
+const serveFixtureRow = "<td>battery_soc</td><td>99</td>"
+
+// serveWaitTimeout bounds every wait-for-a-condition in the runServe tests. Each
+// transition really takes milliseconds; the generous bound exists so a loaded CI
+// box cannot make the test flaky, and is never waited out on the happy path.
+const serveWaitTimeout = 10 * time.Second
+
+// serveWaitStep is how often those conditions are re-checked.
+const serveWaitStep = 5 * time.Millisecond
+
+// fixtureRegisters loads a Phase 0 fixture's by_addr blocks into one
+// address->word map. It is the same seeding the MODE=mock Python sidecar does
+// (sidecar/mock.py), and the input and holding banks share one map because the
+// two address ranges (33xxx, 43xxx) are disjoint.
+func fixtureRegisters(t *testing.T, name string) map[int]uint16 {
+	t.Helper()
+	raw, err := os.ReadFile(filepath.Join("..", "..", "docs", "phase0", "fixtures", name))
+	if err != nil {
+		t.Fatalf("read fixture %s: %v", name, err)
+	}
+	var f struct {
+		Blocks []struct {
+			ByAddr map[string]uint16 `json:"by_addr"`
+		} `json:"blocks"`
+	}
+	if err := json.Unmarshal(raw, &f); err != nil {
+		t.Fatalf("parse fixture %s: %v", name, err)
+	}
+	regs := make(map[int]uint16)
+	for _, b := range f.Blocks {
+		for addr, word := range b.ByAddr {
+			n, err := strconv.Atoi(addr)
+			if err != nil {
+				t.Fatalf("fixture %s: bad register address %q: %v", name, addr, err)
+			}
+			regs[n] = word
+		}
+	}
+	if len(regs) == 0 {
+		t.Fatalf("fixture %s seeded no registers", name)
+	}
+	return regs
+}
+
+// serveSidecar is a fake Python sidecar over HTTP, implementing enough of
+// docs/specs/01-sidecar-contract.md for runServe to poll it: /health always
+// answers serving, and the two block reads answer from the fixture registers.
+//
+// Every register read blocks until release is called, which is what makes the
+// "not ready before the first poll" assertion deterministic: while the gate is
+// shut no poll can possibly complete, so a 200 from /readyz at that point is a
+// real failure rather than a lost race.
+type serveSidecar struct {
+	*httptest.Server
+	regs     map[int]uint16
+	gate     chan struct{}
+	released sync.Once
+}
+
+func newServeSidecar(t *testing.T) *serveSidecar {
+	t.Helper()
+	s := &serveSidecar{regs: fixtureRegisters(t, serveFixtureName), gate: make(chan struct{})}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /health", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, `{"ok":true,"inverter_reachable":true,"mode":"mock"}`)
+	})
+	mux.HandleFunc("POST /read_input", s.handleRead)
+	mux.HandleFunc("POST /read_holding", s.handleRead)
+	s.Server = httptest.NewServer(mux)
+
+	// Registered after the Close cleanup so it runs first (cleanups are LIFO):
+	// Close blocks on in-flight requests, and a test that fails before releasing
+	// the gate would otherwise deadlock the teardown.
+	t.Cleanup(s.Close)
+	t.Cleanup(s.release)
+	return s
+}
+
+// handleRead answers one {addr, count} block read once the gate is open.
+func (s *serveSidecar) handleRead(w http.ResponseWriter, r *http.Request) {
+	select {
+	case <-s.gate:
+	case <-r.Context().Done():
+		return
+	}
+	var req struct {
+		Addr  int `json:"addr"`
+		Count int `json:"count"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, `{"error":{"code":"bad_request","message":"undecodable body"}}`, http.StatusBadRequest)
+		return
+	}
+	regs := make([]uint16, req.Count)
+	for i := range regs {
+		regs[i] = s.regs[req.Addr+i]
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{"addr": req.Addr, "count": req.Count, "regs": regs})
+}
+
+// release opens the gate so register reads are answered. It is idempotent so the
+// cleanup can call it after the test already has.
+func (s *serveSidecar) release() {
+	s.released.Do(func() { close(s.gate) })
+}
+
+// freeHealthAddr reserves a loopback address for HEALTH_ADDR. runServe hands
+// HEALTH_ADDR straight to http.Server.Addr and never reports the bound port, so
+// ":0" would be undiscoverable; binding and immediately releasing a port is the
+// only way to learn one the test can then probe.
+func freeHealthAddr(t *testing.T) string {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("reserve a health port: %v", err)
+	}
+	addr := ln.Addr().String()
+	if err := ln.Close(); err != nil {
+		t.Fatalf("release the reserved health port: %v", err)
+	}
+	return addr
+}
+
+// serveHarness runs runServe in its own goroutine against a fake sidecar and a
+// private health port, and gives the test an HTTP client for the health/status
+// endpoints.
+type serveHarness struct {
+	sidecar *serveSidecar
+	addr    string
+	cancel  context.CancelFunc
+	done    <-chan error
+	client  *http.Client
+
+	exited  sync.Once
+	exitErr error
+}
+
+// startServe stands up the harness. Every environment variable runServe reads is
+// pinned with t.Setenv rather than inherited: godotenv.Load runs in the cobra
+// PersistentPreRun, not in runServe, so calling runServe directly must not depend
+// on a developer's .env or exported shell values. MODE=mock drops the broker and
+// inverter-identity requirements, so the pipeline publishes through
+// publisher.Discard and no MQTT broker is involved.
+func startServe(t *testing.T) *serveHarness {
+	t.Helper()
+	h := &serveHarness{
+		sidecar: newServeSidecar(t),
+		addr:    freeHealthAddr(t),
+		client:  &http.Client{Transport: &http.Transport{DisableKeepAlives: true}, Timeout: 5 * time.Second},
+	}
+
+	t.Setenv("MODE", "mock")
+	t.Setenv("SIDECAR_URL", h.sidecar.URL)
+	t.Setenv("SIDECAR_STARTUP_TIMEOUT", "5s")
+	t.Setenv("HEALTH_ADDR", h.addr)
+	t.Setenv("POLL_INTERVAL", "5s")
+	t.Setenv("POLL_MAX_RETRIES", "0")
+	t.Setenv("FAILURE_THRESHOLD", "1")
+	t.Setenv("CONTROLS_ENABLED", "false")
+	t.Setenv("RTC_SYNC_ENABLED", "false")
+	t.Setenv("TOU_WINDOW", "")
+	t.Setenv("MQTT_BROKER_URL", "")
+	t.Setenv("LOG_LEVEL", "error")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	h.cancel = cancel
+	done := make(chan error, 1)
+	go func() { done <- runServe(ctx) }()
+	h.done = done
+
+	t.Cleanup(func() {
+		cancel()
+		h.sidecar.release()
+		_ = h.wait(t)
+	})
+	return h
+}
+
+// wait blocks until runServe has returned and reports its exit error, failing the
+// test if it never does. The cleanup always calls it, so the result is cached: a
+// test that waits on the exit itself must not leave the cleanup blocked on an
+// already-drained channel.
+func (h *serveHarness) wait(t *testing.T) error {
+	t.Helper()
+	h.exited.Do(func() {
+		select {
+		case h.exitErr = <-h.done:
+		case <-time.After(serveWaitTimeout):
+			t.Error("runServe did not return after the run context was cancelled")
+		}
+	})
+	return h.exitErr
+}
+
+// get issues one request against the health/status server, reporting status 0
+// when the listener refused the connection.
+func (h *serveHarness) get(path string) (int, string) {
+	resp, err := h.client.Get("http://" + h.addr + path)
+	if err != nil {
+		return 0, ""
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return resp.StatusCode, ""
+	}
+	return resp.StatusCode, string(body)
+}
+
+// waitFor re-checks cond until it holds, failing the test with what it was
+// waiting for if serveWaitTimeout passes first. Polling rather than sleeping a
+// fixed time is what keeps the runServe tests both fast and non-flaky.
+func waitFor(t *testing.T, what string, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(serveWaitTimeout)
+	for {
+		if cond() {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out after %s waiting for %s", serveWaitTimeout, what)
+		}
+		time.Sleep(serveWaitStep)
+	}
+}
+
+// TestRunServeEndToEnd is the composition-root test: every seam runServe builds
+// is unit-tested elsewhere, so what is under test here is the wiring between
+// them. It runs the real runServe against a fake sidecar with no broker and no
+// inverter, and asserts the observable consequences of that wiring:
+//
+//   - /healthz answers 200 while the manager runs (REQ-LC-01);
+//   - /readyz is 503 before the first poll and 200 after it (REQ-LC-02,
+//     REQ-LC-09) — the load-bearing assertion, since it only passes when config,
+//     the sidecar client, the startup wait, the scheduler, the state read and the
+//     readiness reporter are all connected to each other;
+//   - the status page shows the reading that poll produced (REQ-LC-12), proving
+//     statePublisher fans the built document out to the page as well as the
+//     publisher;
+//   - cancelling the context exits zero and stops the health listener
+//     (REQ-LC-10's signal branch).
+//
+// A mis-plumbed composition root — a scheduler handed the wrong reporter, a
+// statePublisher without the status server — leaves every existing unit test
+// green and fails here.
+func TestRunServeEndToEnd(t *testing.T) {
+	h := startServe(t)
+
+	waitFor(t, "the health server to start listening", func() bool {
+		code, _ := h.get("/healthz")
+		return code == http.StatusOK
+	})
+
+	if code, _ := h.get("/readyz"); code != http.StatusServiceUnavailable {
+		t.Errorf("/readyz = %d with the first poll still blocked, want %d", code, http.StatusServiceUnavailable)
+	}
+
+	h.sidecar.release()
+
+	waitFor(t, "/readyz to report ready after the first successful poll", func() bool {
+		code, _ := h.get("/readyz")
+		return code == http.StatusOK
+	})
+
+	code, body := h.get("/")
+	if code != http.StatusOK {
+		t.Fatalf("GET / = %d, want 200", code)
+	}
+	if strings.Contains(body, "no readings yet") {
+		t.Errorf("status page still reports no readings after a successful poll:\n%s", body)
+	}
+	if !strings.Contains(body, serveFixtureRow) {
+		t.Errorf("status page does not show the fixture's reading %q:\n%s", serveFixtureRow, body)
+	}
+
+	h.cancel()
+	if err := h.wait(t); err != nil {
+		t.Fatalf("runServe = %v, want nil on the signal branch", err)
+	}
+	waitFor(t, "the health listener to stop accepting connections", func() bool {
+		code, _ := h.get("/healthz")
+		return code == 0
+	})
+}
+
+// TestRunServeRejectsABadConfig covers the other end of the composition root: a
+// configuration that fails validation must abort startup with a wrapped config
+// error and leave nothing running — in particular no health listener, which is
+// started immediately after Load and would otherwise hold the port.
+func TestRunServeRejectsABadConfig(t *testing.T) {
+	addr := freeHealthAddr(t)
+	t.Setenv("MODE", "bogus")
+	t.Setenv("HEALTH_ADDR", addr)
+
+	err := runServe(context.Background())
+
+	if err == nil {
+		t.Fatal("runServe = nil for MODE=bogus, want a config error")
+	}
+	if !strings.Contains(err.Error(), "config:") {
+		t.Errorf("runServe = %v, want the error wrapped with \"config:\"", err)
+	}
+	if conn, dialErr := net.DialTimeout("tcp", addr, time.Second); dialErr == nil {
+		_ = conn.Close()
+		t.Errorf("a listener is still bound to %s after a config failure", addr)
 	}
 }
