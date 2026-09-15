@@ -39,7 +39,7 @@ What ships today:
   `internal/sidecarclient` (typed HTTP client), `internal/inverter` (the whole
   register map: decode/encode, work-mode bitfield, RTC, timed slots),
   `internal/publisher` (block collect + discovery/availability/state),
-  `internal/homeassistant` (43 entities, discovery payloads, state document),
+  `internal/homeassistant` (47 entities, discovery payloads, state document),
   `internal/mqtt` (autopaho, LWT, reconnect republish, command subscription),
   `internal/controls` (read-before-write guard, command handlers, schedule
   reconcile), `internal/schedule` (ToU windows, boost planning),

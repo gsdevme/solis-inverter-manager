@@ -43,11 +43,11 @@ func TestStateTagsEqualEntityKeys(t *testing.T) {
 		}
 		keys[e.Key] = true
 	}
-	if len(keys) != 42 {
-		t.Errorf("got %d stateful entity keys, want 42", len(keys))
+	if len(keys) != 46 {
+		t.Errorf("got %d stateful entity keys, want 46", len(keys))
 	}
-	if len(tags) != 42 {
-		t.Errorf("got %d state json tags, want 42", len(tags))
+	if len(tags) != 46 {
+		t.Errorf("got %d state json tags, want 46", len(tags))
 	}
 	for k := range keys {
 		if !tags[k] {
@@ -67,6 +67,7 @@ func sampleTelemetry() inverter.Telemetry {
 		Battery: inverter.Battery{
 			VoltageV: 51.2, CurrentA: -3.4, Charging: false, SOCPercent: 87, SOHPercent: 99,
 			BMSVoltageV: 51.25, BMSCurrentA: -3.4, PowerW: -174,
+			BMSChargeCurrentLimitA: 15, BMSDischargeCurrentLimitA: 112.5,
 		},
 		PV:     inverter.PV{PV1VoltageV: 320.5, PV1CurrentA: 4.1, PV2VoltageV: 0, PV2CurrentA: 0, TotalPowerW: 1314},
 		Grid:   inverter.Grid{PowerW: -250, TotalImportKWh: 1234, ImportTodayKWh: 5.6, TotalExportKWh: 890, ExportTodayKWh: 7.8},
@@ -78,7 +79,10 @@ func sampleTelemetry() inverter.Telemetry {
 
 func TestBuildStateTopicAndValues(t *testing.T) {
 	c := testConfig()
-	sp := Setpoints{SetChargeCurrent: 25.5, SetDischargeCurrent: 40, OptimalIncome: true}
+	sp := Setpoints{
+		SetChargeCurrent: 25.5, SetDischargeCurrent: 40, OptimalIncome: true,
+		MaxChargeCurrent: 100, MaxDischargeCurrent: 100,
+	}
 	msg, err := c.BuildState(sampleTelemetry(), 90*time.Second, sp)
 	if err != nil {
 		t.Fatalf("BuildState: %v", err)
@@ -115,6 +119,20 @@ func TestBuildStateTopicAndValues(t *testing.T) {
 	}
 	if got["grid_power"] != float64(-250) {
 		t.Errorf("grid_power = %v, want -250", got["grid_power"])
+	}
+	// The three current ceilings are distinct values and must not be conflated:
+	// the BMS advertises them, the inverter configures its own, and the timed
+	// setpoint is what the manager commands.
+	for key, want := range map[string]float64{
+		"bms_charge_current_limit":       15,
+		"bms_discharge_current_limit":    112.5,
+		"inverter_max_charge_current":    100,
+		"inverter_max_discharge_current": 100,
+		"set_charge_current":             25.5,
+	} {
+		if got[key] != want {
+			t.Errorf("%s = %v, want %v", key, got[key], want)
+		}
 	}
 	// RFC3339 rtc.
 	if got["rtc"] != "2026-09-12T13:45:30Z" {

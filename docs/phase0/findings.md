@@ -83,6 +83,8 @@ Live values from `fixtures/live-snapshot-comprehensive.json` (2026-09-08 ~15:40)
 | 33140 | **Battery SOH** | U16 | ×1 % | 97 | 97 % |
 | 33141 | **BMS battery voltage** | U16 | ÷100 V | 5105 | 51.05 V |
 | 33142 | BMS battery current | S16 | ÷10 A | 155 | 15.5 A (scale matches 33134) |
+| 33143 | **BMS charge current limit** | U16 | ÷10 A | 150 | 15.0 A (0 at SOC 100 %; see §BMS current limits) |
+| 33144 | **BMS discharge current limit** | U16 | ÷10 A | 1125 | 112.5 A |
 | 33147 | House load power | U16 | ×1 W | 385 | 385 W |
 | 33149·33150 | **Battery power** | **S32** | ×1 W | 0/802 | +802 W (charge) |
 | 33161·33162 | Battery total charge energy | U32 | ×1 kWh | 0/10640 | 10640 kWh |
@@ -187,6 +189,7 @@ Amps write encoding: `int(round(amps, 1) * 10)`, fc06. Inverter accepts up to
 | 11 | Timed H/M register writes (43143–43150, slots 2/3) | fc06 accepted, persist ≥130 s, restore confirmed (Stage A probe on 43144, 43164) |
 | 12 | 43024 writability | fc06 **acked but ignored** — read-back unchanged at 0/60/130 s; treat as read-only |
 | 13 | Clearing a timed slot by zeroing its H/M pair | **Confirmed** — slot-3 charge `43163`–`43166` written 0/0/0/0, read back all-zero at 0 s and 60 s, restored to 14/2/14/56 with read-back (Stage B2 pre-design probe, `fixtures/write-probe-clear-slot3.json`) |
+| 14 | BMS limit pair: `33143`/`33144` vs `33206`/`33207` | **`33143`/`33144`** — confirmed against the Solis app (see §BMS current limits); `33206`/`33207` are constants (0/650 unchanged across captures 7 days and 1 SOC point apart) |
 
 ## Stage A (#27) — timed-slot layout & SOC probe
 
@@ -253,6 +256,8 @@ Notable extras beyond the confirmed map above (decode as future features permit)
 - `fixtures/write-path-probe.json` — the restored write test on 43141.
 - `fixtures/live-snapshot-holding-stage-a.json` — Stage A (#27) holding
   43000–43195 sweep confirming timed slots 2/3.
+- `fixtures/bms-limit-probe.json` — 2026-09-15 read-only probe confirming the BMS
+  current limits (input 33139+8, 33194+24; holding 43110+61).
 - `fixtures/write-probe-stage-a.json` — Stage A write→read-back→restore probe on
   43144 and 43164 (held) and 43024 (acked but ignored).
 - `fixtures/write-probe-clear-slot3.json` — Stage B2 pre-design probe: zeroing
@@ -279,3 +284,43 @@ empty — so B2 clears a boost by zeroing offsets `+2..+5` (or `+6..+9`) of slot
 The first read of the session returned one sidecar `503` after ~18 min idle
 (datalogger dropped the session; the sidecar reset it and the retry succeeded) —
 the same laggy-link behaviour the manager's read-with-retry covers.
+
+## BMS current limits — `33143`/`33144` (confirmed)
+
+The BMS advertises how much current the pack will currently accept and deliver.
+These are ceilings, not readings: they are what limits a charge, so they explain
+a boost that under-delivers.
+
+Two candidate pairs appeared in the Phase 0 sweep. A read-only probe on
+2026-09-15 (`fixtures/bms-limit-probe.json`) settled it:
+
+| Addr | 2026-09-08 (SOC 99 %, charging 15.5 A) | 2026-09-15 (SOC 100 %, idle) |
+|---|---|---|
+| `33143` | 150 (15.0 A) | **0** (0.0 A) |
+| `33144` | 1125 (112.5 A) | 1125 (112.5 A) |
+| `33206` | 0 | 0 (unchanged) |
+| `33207` | 650 | 650 (unchanged) |
+
+**Ground truth:** with the 2026-09-15 capture open, the Solis app reported
+**0 A charge / 112.5 A discharge** for the BMS — matching `33143`=0 and
+`33144`=1125 exactly, which confirms both the addressing and the ÷10 A scale
+against the vendor's own UI.
+
+Supporting evidence:
+
+- `33143` **varies with pack state** (15.0 A at SOC 99 %, 0.0 A at SOC 100 %) —
+  the charge taper a BMS applies as the pack fills. It is not a constant.
+- It is **not** a mirror of the timed charge setpoint: `43141` read 350 (35.0 A)
+  in the 2026-09-08 fixtures while `33143` read 150.
+- `33144` reads 112.5 A while the battery is **idle**, so it cannot be an
+  instantaneous current — only a limit.
+- `33206`/`33207` were byte-identical across two captures a week and one SOC
+  point apart, so they are configuration constants, not live BMS limits.
+
+The pair sits inside the telemetry block the manager already reads
+(`33122`–`33175`), so decoding it costs no extra Modbus traffic.
+
+Also re-confirmed in the same probe: holding `43117`/`43118` = 1000/1000
+(100.0 A), the inverter's own configured charge/discharge ceiling — distinct
+from both the BMS limits above and the timed-slot setpoints `43141`/`43142`
+(150/250 = 15.0/25.0 A at probe time).

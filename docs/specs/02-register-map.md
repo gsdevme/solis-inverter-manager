@@ -75,6 +75,8 @@ Live values and cross-checks are in findings.md — not repeated here.
 | 33140 | Battery SOH | U16 | ×1 % |
 | 33141 | BMS battery voltage | U16 | ÷100 V |
 | 33142 | BMS battery current | S16 | ÷10 A |
+| 33143 | BMS charge current limit | U16 | ÷10 A — BMS-advertised ceiling; tapers to 0 as the pack fills |
+| 33144 | BMS discharge current limit | U16 | ÷10 A — BMS-advertised ceiling |
 | 33147 | House load power | U16 | ×1 W |
 | 33149·33150 | Battery power | S32 | ×1 W magnitude; signed from 33135 (+charge/−discharge) |
 | 33161·33162 | Battery total charge energy | U32 | ×1 kWh |
@@ -118,7 +120,7 @@ so the two reads need no merging.
 | 43114 | Charge/discharge enable | U16 | 0 / 1 | R/W |
 | 43115 | Charge/discharge direction | U16 | 0 = charge, 1 = discharge | R/W |
 | 43116 | Instant charge/discharge current | U16 | ÷10 A | R/W |
-| 43117 / 43118 | Max charge / discharge current | U16 | ÷10 A (1000 = 100.0 A unit limit) | R/W |
+| 43117 / 43118 | Max charge / discharge current | U16 | ÷10 A (1000 = 100.0 A unit limit); read and published, never written | R/W |
 | 43141 | Timed charge current | U16 | ÷10 A | R/W |
 | 43142 | Timed discharge current | U16 | ÷10 A | R/W |
 | 43143 / 43144 | Timed charge start H / M | U16 | 0–23 / 0–59 | R/W |
@@ -183,4 +185,6 @@ registers"): product/model/firmware (33000–33003), inverter serial as ASCII
 (43034–43067), the protection-threshold table (43090–43113, 43119–43122 —
 ruled out as a schedule in Stage A, #27), the candidate force-charge/backup SOC
 pair (43024/43025, meaning unconfirmed; 43024 ignores fc06), and various
-limit/config registers (33181–33217, 43012–43049).
+limit/config registers (33181–33217, 43012–43049). Within that last range,
+33206/33207 were ruled out as the BMS current-limit pair — they are constants
+(see `docs/phase0/findings.md` §"BMS current limits").

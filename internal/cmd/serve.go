@@ -48,6 +48,8 @@ func toHASetpoints(sp controls.Setpoints, now time.Time) homeassistant.Setpoints
 	return homeassistant.Setpoints{
 		SetChargeCurrent:    sp.SetChargeCurrent,
 		SetDischargeCurrent: sp.SetDischargeCurrent,
+		MaxChargeCurrent:    sp.MaxChargeCurrent,
+		MaxDischargeCurrent: sp.MaxDischargeCurrent,
 		OptimalIncome:       sp.OptimalIncome,
 		Slots:               sp.Slots,
 		BoostEndsAt:         schedule.BoostOf(sp.Slots).EndsAt(now),

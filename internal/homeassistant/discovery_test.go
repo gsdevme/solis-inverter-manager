@@ -257,12 +257,12 @@ func TestDiscoveryBareDiagnosticSensors(t *testing.T) {
 }
 
 // TestDiscoveryControlsDisabledByDefault covers the Phase-4 behaviour: with
-// ControlsEnabled unset, only the 38 read-only entities are published and no
+// ControlsEnabled unset, only the 42 read-only entities are published and no
 // message carries a command_topic.
 func TestDiscoveryControlsDisabledByDefault(t *testing.T) {
 	byTopic := mustBuildDiscoveryFor(t, testConfig())
-	if len(byTopic) != 38 {
-		t.Fatalf("got %d discovery messages, want 38", len(byTopic))
+	if len(byTopic) != 42 {
+		t.Fatalf("got %d discovery messages, want 42", len(byTopic))
 	}
 	for topic, p := range byTopic {
 		if _, present := p["command_topic"]; present {
@@ -285,8 +285,8 @@ func TestDiscoveryControlsEnabled(t *testing.T) {
 	c := testConfig()
 	c.ControlsEnabled = true
 	byTopic := mustBuildDiscoveryFor(t, c)
-	if len(byTopic) != 43 {
-		t.Fatalf("got %d discovery messages, want 43", len(byTopic))
+	if len(byTopic) != 47 {
+		t.Fatalf("got %d discovery messages, want 47", len(byTopic))
 	}
 
 	num := byTopic["homeassistant/number/1234567890_set_charge_current/config"]
@@ -466,22 +466,26 @@ func TestDiscoveryWorkModeRenamed(t *testing.T) {
 func TestDiscoverySuggestedDisplayPrecision(t *testing.T) {
 	byTopic := mustBuildDiscovery(t)
 	want := map[string]float64{
-		"battery_voltage":         1,
-		"battery_current":         1,
-		"bms_voltage":             2,
-		"bms_current":             1,
-		"pv1_voltage":             1,
-		"pv1_current":             1,
-		"pv2_voltage":             1,
-		"pv2_current":             1,
-		"grid_import_today":       1,
-		"grid_export_today":       1,
-		"inverter_temperature":    1,
-		"grid_frequency":          2,
-		"generation_today":        1,
-		"generation_yesterday":    1,
-		"battery_charge_today":    1,
-		"battery_discharge_today": 1,
+		"battery_voltage":                1,
+		"battery_current":                1,
+		"bms_voltage":                    2,
+		"bms_current":                    1,
+		"bms_charge_current_limit":       1,
+		"bms_discharge_current_limit":    1,
+		"inverter_max_charge_current":    1,
+		"inverter_max_discharge_current": 1,
+		"pv1_voltage":                    1,
+		"pv1_current":                    1,
+		"pv2_voltage":                    1,
+		"pv2_current":                    1,
+		"grid_import_today":              1,
+		"grid_export_today":              1,
+		"inverter_temperature":           1,
+		"grid_frequency":                 2,
+		"generation_today":               1,
+		"generation_yesterday":           1,
+		"battery_charge_today":           1,
+		"battery_discharge_today":        1,
 	}
 	for key, prec := range want {
 		p := byTopic["homeassistant/sensor/1234567890_"+key+"/config"]

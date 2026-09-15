@@ -12,17 +12,19 @@ import (
 // optimal-income flag, and the three timed slots.
 func TestReadSetpoints(t *testing.T) {
 	f := newFakeRW()
-	f.regs[43110] = 35  // timed on -> OptimalIncome true
-	f.regs[43141] = 300 // 30.0 A
-	f.regs[43142] = 155 // 15.5 A
-	f.regs[43143] = 23  // slot 1 charge start hour
-	f.regs[43144] = 31  // slot 1 charge start minute
-	f.regs[43155] = 5   // slot 2 charge end hour
-	f.regs[43156] = 29  // slot 2 charge end minute
-	f.regs[43163] = 14  // slot 3 charge start hour
-	f.regs[43164] = 2   // slot 3 charge start minute
-	f.regs[43165] = 14  // slot 3 charge end hour
-	f.regs[43166] = 56  // slot 3 charge end minute
+	f.regs[43110] = 35   // timed on -> OptimalIncome true
+	f.regs[43141] = 300  // 30.0 A
+	f.regs[43142] = 155  // 15.5 A
+	f.regs[43117] = 1000 // inverter max charge 100.0 A
+	f.regs[43118] = 900  // inverter max discharge 90.0 A
+	f.regs[43143] = 23   // slot 1 charge start hour
+	f.regs[43144] = 31   // slot 1 charge start minute
+	f.regs[43155] = 5    // slot 2 charge end hour
+	f.regs[43156] = 29   // slot 2 charge end minute
+	f.regs[43163] = 14   // slot 3 charge start hour
+	f.regs[43164] = 2    // slot 3 charge start minute
+	f.regs[43165] = 14   // slot 3 charge end hour
+	f.regs[43166] = 56   // slot 3 charge end minute
 
 	sp, err := controls.ReadSetpoints(context.Background(), f)
 	if err != nil {
@@ -36,6 +38,14 @@ func TestReadSetpoints(t *testing.T) {
 	}
 	if sp.SetDischargeCurrent != 15.5 {
 		t.Errorf("SetDischargeCurrent = %v, want 15.5", sp.SetDischargeCurrent)
+	}
+	// The inverter's own ceiling, distinct from the timed setpoints above; the
+	// two are deliberately given different values so a swap would fail here.
+	if sp.MaxChargeCurrent != 100.0 {
+		t.Errorf("MaxChargeCurrent = %v, want 100.0", sp.MaxChargeCurrent)
+	}
+	if sp.MaxDischargeCurrent != 90.0 {
+		t.Errorf("MaxDischargeCurrent = %v, want 90.0", sp.MaxDischargeCurrent)
 	}
 	if want := (inverter.Clock{Hour: 23, Minute: 31}); sp.Slots[0].Charge.Start != want {
 		t.Errorf("Slots[0].Charge.Start = %v, want %v", sp.Slots[0].Charge.Start, want)
