@@ -82,9 +82,6 @@ type Entity struct {
 	// mirrors the register scale (÷10 → 1, ÷100 → 2) so a whole-number reading
 	// keeps its trailing zero (49.0 V, not 49 V). 0 omits the key.
 	Precision int
-	// InvertBool, for binary_sensors, emits ON when the JSON value is falsy.
-	// Unused by the current Solis catalogue; kept for parity with the shape.
-	InvertBool bool
 
 	// Command marks a writable control (Number/Select/Button). When set,
 	// BuildDiscovery emits a command_topic and the component-specific keys
@@ -94,12 +91,6 @@ type Entity struct {
 	// Number bounds and step, plus the HA input Mode ("box" | "slider" | "auto").
 	Min, Max, Step float64
 	Mode           string
-
-	// Switch payloads (published on toggle) and states (matched in the shared
-	// state document by its value_template). Unused by the current Solis
-	// catalogue, which publishes no switch entity; kept for parity with the shape.
-	PayloadOn, PayloadOff string
-	StateOn, StateOff     string
 
 	// Options lists a Select's choices, in display order. A Select's state
 	// document value must always be one of them (or null for "unknown").
@@ -177,7 +168,7 @@ func Entities() []Entity {
 		{Component: Number, Key: "set_charge_current", Name: "Set charge current", Command: true, Min: 0, Max: 60, Step: 0.1, Mode: "box", Unit: "A"},
 		{Component: Number, Key: "set_discharge_current", Name: "Set discharge current", Command: true, Min: 0, Max: 60, Step: 0.1, Mode: "box", Unit: "A"},
 		{Component: Select, Key: "optimal_income", Name: "Optimal income", Command: true, Options: []string{"Run", "Stop"}},
-		{Component: Select, Key: "boost_select", Name: "Boost", Command: true, Options: schedule.BoostOptions()},
+		{Component: Select, Key: "boost_select", Name: "Boost control", Command: true, Options: schedule.BoostOptions()},
 		{Component: Button, Key: "rtc_sync", Name: "Sync RTC now", Command: true, PayloadPress: "PRESS", Category: "diagnostic"},
 	}
 }

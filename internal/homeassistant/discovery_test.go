@@ -257,7 +257,7 @@ func TestDiscoveryBareDiagnosticSensors(t *testing.T) {
 }
 
 // TestDiscoveryControlsDisabledByDefault covers the Phase-4 behaviour: with
-// ControlsEnabled unset, only the 36 read-only entities are published and no
+// ControlsEnabled unset, only the 38 read-only entities are published and no
 // message carries a command_topic.
 func TestDiscoveryControlsDisabledByDefault(t *testing.T) {
 	byTopic := mustBuildDiscoveryFor(t, testConfig())
@@ -394,8 +394,8 @@ func TestDiscoveryBoostSelect(t *testing.T) {
 	if p == nil {
 		t.Fatal("missing boost_select select")
 	}
-	if p["name"] != "Boost" {
-		t.Errorf("name = %v, want Boost", p["name"])
+	if p["name"] != "Boost control" {
+		t.Errorf("name = %v, want Boost control", p["name"])
 	}
 	if p["command_topic"] != "~/boost_select/set" {
 		t.Errorf("command_topic = %v", p["command_topic"])
