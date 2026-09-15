@@ -103,12 +103,63 @@ comfortably covers that plus SIGTERM propagation to both containers.
 - **Sidecar:** if it needs scratch space, mount an `emptyDir` at `/tmp` rather than
   relaxing the root filesystem.
 
+## Local development stack (docker compose)
+
+`docker-compose.yml` runs the whole system locally as three services — broker,
+sidecar, manager — on one compose network. It is the dev and live-smoke harness; it is
+**not** the production topology (that is the two-container pod above).
+
+| Service | Image | Host port | Role |
+|---|---|---|---|
+| `mqtt` | `eclipse-mosquitto:2` | `1883` | Dev broker, config from `deploy/mosquitto/mosquitto.conf` |
+| `sidecar` | built from `sidecar/Dockerfile` | `8081` | Solarman V5 transport |
+| `manager` | built from `Dockerfile` | `8080` | Orchestrator, `/healthz` + `/readyz` |
+
+Both application services read the same `.env` via `env_file`. Compose then overrides
+the two endpoints, because the defaults in `.env` target a same-host sidecar and broker
+for a bare `go run`:
+
+```yaml
+SIDECAR_URL: http://sidecar:8081
+MQTT_BROKER_URL: mqtt://mqtt:1883
+```
+
+`depends_on` orders the manager behind the broker and the sidecar. With `.env.dist`'s
+`MODE=mock` the stack runs end to end with **no hardware** — the sidecar serves the
+Phase 0 fixtures and the manager polls it and publishes real discovery and state:
+
+```sh
+cp .env.dist .env && docker compose up
+docker compose exec mqtt mosquitto_sub -t '#' -v   # watch discovery + state
+docker compose down
+```
+
+For a live run, set `MODE=live` plus `INVERTER_IP` / `INVERTER_SERIAL` in `.env`. Only
+the sidecar opens the `:8899` datalogger socket; the manager reaches the inverter
+solely through `SIDECAR_URL`, exactly as in the pod.
+
+> **The compose broker is not a production broker.**
+> `deploy/mosquitto/mosquitto.conf` is `listener 1883` + `allow_anonymous true` with no
+> persistence and no TLS — deliberate, for a throwaway local stack. Never reuse it for
+> a real deployment.
+
+> **The sidecar's `8081:8081` publish is a compose convenience**, so you can curl
+> `/health` from the host. It is not part of the contract: in the pod the sidecar is
+> reached over loopback only (`REQ-SD-01`, `REQ-DP-01`).
+
 ## CI / release
 
+- **Shared gate** ([`checks.yml`](../../.github/workflows/checks.yml)): a
+  `workflow_call` reusable workflow holding the entire quality gate — the Go lint,
+  `go vet`, unit and e2e jobs plus the sidecar `pytest` + `ruff` job — each invoking
+  the Makefile targets, so there is exactly one definition of "green" and CI uses the
+  same pinned tool versions as a laptop. Workflow-level `permissions: {}`, with
+  `contents: read` granted per job. Called by **both** pipelines below, so the gate
+  that guards a merge also guards a release.
 - **PR gate** ([`ci.yml`](../../.github/workflows/ci.yml)): the `checks` reusable
-  workflow (`make lint`/`test`/`test-e2e`) plus a `docker-build` job that builds
-  **both** images build-only (`push: false`), native `linux/amd64`, with scoped gha
-  caches. Catches Dockerfile breakage before merge.
+  workflow plus a `docker-build` job that builds **both** images build-only
+  (`push: false`), native `linux/amd64`, with scoped gha caches. Catches Dockerfile
+  breakage before merge.
 - **Release** ([`release.yml`](../../.github/workflows/release.yml)): on merge to
   `master`, the same gate → `release-please` (`release-type: go`, driven by
   [`release-please-config.json`](../../release-please-config.json) +

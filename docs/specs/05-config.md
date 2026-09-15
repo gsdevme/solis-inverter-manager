@@ -1,12 +1,15 @@
 # 05 — Configuration
 
-> **Status: skeleton.** Full content authored in a later phase. The variable
-> catalogue and validation rules below are authoritative for the scaffold.
-
 All configuration is via **environment variables**, bound in `internal/config` with
 stdlib `os.Getenv` + validation. For local dev, `godotenv` loads a `.env` file (a
 no-op in prod). `.env.dist` is the committed template; `.env` is git-ignored and
 holds real secrets.
+
+`.env.dist` may deliberately differ from a documented default where the local-dev
+ergonomics differ from production — it ships `MODE=mock` so a fresh checkout runs
+with no hardware, and `LOG_FORMAT=text` because text logs read better in a terminal
+than the `json` default. Such overrides are commented in `.env.dist` itself; the
+defaults in the table below are what the **code** applies when the variable is unset.
 
 ## Variables
 
@@ -52,6 +55,30 @@ holds real secrets.
   an unparseable value fails validation naming `TOU_WINDOW`.
 - **Secrets** (`INVERTER_SERIAL`, `MQTT_PASSWORD`) are never logged: the config's
   `String()` and `LogValue()` replace them with a redaction placeholder.
+- `CONTROLS_ENABLED` is parsed in the same pass; an unparseable boolean fails startup
+  rather than silently defaulting to `true` (`REQ-CF-10`).
+- `TOU_WINDOW` is read with `os.LookupEnv`, not `os.Getenv`, because it must
+  distinguish **unset** (take the `23:30-05:30` default) from **set to the empty
+  string** (disable ToU assertion; leave slots 1–2 untouched). Every other string
+  variable treats the two the same way.
+
+## Shared with the sidecar
+
+The Python sidecar reads a **subset of the same names** from the same `.env`, so one
+file configures both processes (`01-sidecar-contract.md` §Config):
+
+| Var | Read by | Notes |
+| --- | --- | --- |
+| `MODE` | both | Required by the sidecar; must be `mock` or `live` (`REQ-SD-13`). |
+| `INVERTER_IP`, `INVERTER_SERIAL`, `INVERTER_PORT` | both | The sidecar opens the socket; the manager only needs the serial for MQTT topics and the HA device block (`REQ-SD-10`). |
+| `INVERTER_SOCKET_TIMEOUT` | both | The sidecar accepts bare seconds as well as a Go duration (`REQ-SD-11`). |
+| `SIDECAR_LISTEN_ADDR` | sidecar only | Default `:8081`; empty host binds all interfaces (`REQ-SD-08`). The manager's matching knob is `SIDECAR_URL`. |
+| `MOCK_FIXTURE` | sidecar only | `MODE=mock` seed snapshot; defaults to the Phase 0 full sweep (`REQ-SD-09`). |
+
+The sidecar validates fail-fast and redacts `INVERTER_SERIAL` in its logs exactly as
+the manager does (`REQ-SD-12`, `REQ-SD-13`). It never reads any `MQTT_*`, `HA_*`,
+`POLL_*`, `RTC_*`, `TOU_WINDOW`, `CONTROLS_ENABLED` or `HEALTH_ADDR` value — those are
+manager-only.
 
 ## CRITICAL design constraint — READ-BEFORE-WRITE write-guard
 

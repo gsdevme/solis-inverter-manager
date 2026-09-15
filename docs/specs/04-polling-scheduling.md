@@ -82,9 +82,27 @@ Periodic clock correction is **folded into the poll**, not a separate schedule:
 
 ## Testability
 
-- `Now func() time.Time` and `After func(time.Duration) <-chan time.Time` are
-  injected (default `time.Now` / `time.After`). The scheduler and the controls
-  handler (RTC clock) share one `Now`, so a fake clock covers both.
-- Unit tests use `testing/synctest` for the timed loop and backoff; the godog
-  acceptance suite (`features/polling.feature`) drives `PollNow` with an immediate
-  fake backoff clock to assert retry, the retained cache, and readiness transitions.
+Two clock seams are injected (defaults `time.Now` / `time.After`), each with a
+distinct job — and the **poll cadence is neither of them**:
+
+- **`Now func() time.Time`** supplies the current time for **RTC drift**
+  (`inverter.Drift(tel.Time, s.now())`, feeding both the `rtc_drift` sensor and the
+  auto-sync threshold) and for **boost planning**. The scheduler, the controls handler
+  and the publisher share one `Now`, so a single fake clock covers all three and the
+  drift a test asserts is the drift the sync decision used.
+- **`After func(time.Duration) <-chan time.Time`** supplies the **retry backoff waits
+  only** (`1s, 2s, 4s, …`), so a test can collapse the backoff without collapsing
+  anything else.
+- **The cadence uses `time.NewTicker(PollInterval)`**, deliberately not a seam. A
+  ticker fires on a fixed period, so a poll that runs long does **not** push the
+  schedule out — the next tick still arrives on the original cadence — whereas a
+  sleep-after-work loop would drift by the duration of every slow poll. The immediate
+  first poll runs before the ticker is created.
+
+Both seams are deterministic under **`testing/synctest`**, which also drives the
+ticker on its fake clock, so the timed loop and the backoff are tested without real
+sleeps. The godog acceptance suite (`features/polling.feature`) instead drives
+`PollNow` explicitly with an immediate fake backoff clock, asserting retry, the
+retained cache and readiness transitions one cycle at a time.
+
+See `REQ-SC-07` (seams), `REQ-SC-09` (`PollNow`) and `REQ-TS-04` (determinism).

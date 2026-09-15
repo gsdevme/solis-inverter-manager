@@ -26,20 +26,40 @@ current status; live progress is tracked in GitHub **epic #25** (phase issues
 
 ## Current status
 
-- **Phase 0** (#17) ✅ — register map confirmed against the live inverter.
-- **Phase 1** (#18) ✅ — Go scaffold: module `github.com/gsdevme/solis-inverter-manager`
-  (go 1.27), cobra `serve`, `internal/config` (env catalog, `errors.Join`
-  fail-fast, `MODE=mock|live`, slog with secret redaction), `internal/server`
-  (`/healthz`, `/readyz`), Makefile, `.golangci.yml`, godog harness, `docs/specs`
-  skeletons, `.env.dist`. The `internal/{mqtt,homeassistant,publisher,scheduler,
-  mock,inverter,sidecarclient}` packages are doc-only stubs filled in by later
-  phases.
-- **Phase 2** (#19) ✅ — thin Python sidecar (`sidecar/`): `pysolarmanv5` transport
-  (persistent socket, single lock, reconnect-on-error), REST-ish generic register
-  RPCs, `MODE=mock` fixture server, pytest + Dockerfile; contract in
+**The rebuild is complete.** Phases 0–7 (#17–#24, epic #25) are all done, as is the
+post-rebuild Tariff & Boost work: #27 (Stage A — timed-slot layout probe) and #28
+(B1 derived schedule sensors, B2 the boost write path; live smoke passed 2026-09-14).
+Latest release `v2.3.0`. `docs/plans/rebuild.md` has the phase table.
+
+What ships today:
+
+- **Go manager** — `internal/config` (env catalog, `errors.Join` fail-fast,
+  `MODE=mock|live`, slog with secret redaction), `internal/server` (`/healthz`,
+  `/readyz`, HTML status page), `internal/cmd` (composition root, graceful shutdown),
+  `internal/sidecarclient` (typed HTTP client), `internal/inverter` (the whole
+  register map: decode/encode, work-mode bitfield, RTC, timed slots),
+  `internal/publisher` (block collect + discovery/availability/state),
+  `internal/homeassistant` (43 entities, discovery payloads, state document),
+  `internal/mqtt` (autopaho, LWT, reconnect republish, command subscription),
+  `internal/controls` (read-before-write guard, command handlers, schedule
+  reconcile), `internal/schedule` (ToU windows, boost planning),
+  `internal/scheduler` (serialised poll, backoff, last-good cache, readiness,
+  opt-in RTC auto-sync).
+- **Python sidecar** (`sidecar/`) — `pysolarmanv5` transport (persistent socket,
+  single lock, reconnect-on-error), REST-ish generic register RPCs, `MODE=mock`
+  fixture server, pytest + ruff + Dockerfile; contract in
   `docs/specs/01-sidecar-contract.md`.
-- **Phase 3** (#20) is next: the Go register map + decode, `internal/sidecarclient`,
-  then delete the legacy Python monolith.
+- **Tests** — 28 Go unit/integration test files, a 30-scenario godog acceptance suite
+  (`features/`, six feature files), fixture-driven decode tests off
+  `docs/phase0/fixtures/`, and the sidecar's pytest/ruff suite. See
+  `docs/specs/07-testing.md`.
+- **Packaging** — both images published to ghcr on every release-please release
+  (approved since `v2.0.0`); `docker-compose.yml` runs the full local stack.
+
+Note: `internal/mock` was removed — it was a doc-only stub, superseded by the
+in-process Go fakes in `features/steps_test.go` (`stubReader`, `fakeHRW`,
+`publisher.RecordingPublisher`). The acceptance suite never needed a mock sidecar
+process.
 
 ## Commands
 
@@ -49,6 +69,11 @@ make vet          # go vet ./...
 make test         # unit/integration (excludes the godog features suite)
 make test-e2e     # godog acceptance suite (./features/...)
 make lint         # golangci-lint (installs pinned binary into ./bin on first use)
+
+make sidecar-install  # pip install -r sidecar/requirements-dev.txt
+make sidecar-run      # MODE=mock python -m sidecar (fixture-backed, no hardware)
+make sidecar-test     # pytest sidecar
+make sidecar-lint     # ruff check + ruff format --check
 
 gofmt -l .        # must be empty
 go vet ./... && go build ./...
@@ -60,8 +85,9 @@ MODE=mock HEALTH_ADDR=:18080 go run ./cmd serve   # /healthz=200, /readyz=503 (n
 `internal/config` resolves a single `MODE` switch. `MODE=mock` drops the
 inverter/MQTT requirements so the pipeline runs against canned data with no
 hardware; `MODE=live` requires the real inverter/sidecar and MQTT values.
-`.env.dist` ships `MODE=mock` — `cp .env.dist .env` to start. The `MODE=mock`
-fake sidecar itself lands in **Phase 2**.
+`.env.dist` ships `MODE=mock` — `cp .env.dist .env` to start. The sidecar's own
+`MODE=mock` fixture server ships in `sidecar/mock.py`, so the whole stack runs with
+no hardware (`docker compose up`, or `make sidecar-run` alongside `make run`).
 
 ## Conventions
 

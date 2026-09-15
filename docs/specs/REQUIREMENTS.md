@@ -1,17 +1,25 @@
 # Requirements
 
-> **Status: skeleton.** Stable, traceable requirement IDs are enumerated in a later
-> phase. Prefix meanings: `SD` sidecar contract/client, `RM` register map/decode,
-> `HA` MQTT/Home Assistant, `SC` scheduling, `CF` config, `LC` lifecycle/health,
-> `TS` testing, `DP` deployment.
+Stable, traceable requirement IDs. Prefix meanings: `SD` sidecar contract/client,
+`RM` register map/decode, `HA` MQTT/Home Assistant, `SC` scheduling, `CF` config,
+`LC` lifecycle/health, `TS` testing, `DP` deployment.
+
+IDs are **stable and never renumbered** — they are cited from the specs and from
+code comments (`internal/controls/*.go`, `internal/homeassistant/discovery.go`).
+A behaviour change updates the relevant `REQ-*` entry and its spec in the same
+commit; new behaviour takes the next free number in its prefix.
 
 ## Sidecar (`sidecar/`, `01-sidecar-contract.md`)
 
 The thin Python transport sidecar (Phase 2, #19). See
 [`01-sidecar-contract.md`](01-sidecar-contract.md) for the full wire contract.
 
-- **REQ-SD-01** Localhost HTTP on `:8081` (matches Go `SIDECAR_URL` default),
-  JSON request/response bodies. → `sidecar/http_api.py`, `sidecar/__main__.py`
+- **REQ-SD-01** HTTP with JSON request/response bodies on `:8081` by default
+  (`SIDECAR_LISTEN_ADDR`, REQ-SD-08), matching the Go `SIDECAR_URL` default. In the
+  deployed two-container pod the manager reaches it over **loopback** — that is a
+  pod-topology property (REQ-DP-01, `08-deployment.md`), **not** a bind guarantee:
+  the default empty host binds all interfaces and `docker-compose.yml` publishes
+  `8081:8081` to the host. → `sidecar/http_api.py`, `sidecar/__main__.py`
 - **REQ-SD-02** `POST /read_input` (fc04) and `POST /read_holding` (fc03) block
   reads of `{addr,count}` return raw `uint16` words `{addr,count,regs}` — no
   decode/scale/sign. → `sidecar/http_api.py`, `sidecar/transport.py`
@@ -27,16 +35,153 @@ The thin Python transport sidecar (Phase 2, #19). See
   fixture (no `pysolarmanv5`, no socket). → `sidecar/mock.py`, `sidecar/config.py`
 - **REQ-SD-07** Input validation (`count` 1..125, `addr`/`value` 0..65535) and the
   error envelope `{"error":{code,message}}` with codes `bad_request`/`timeout`/
-  `illegal_address`/`frame_error`/`connection_error`/`not_found`.
-  → `sidecar/http_api.py`, `sidecar/errors.py`
+  `illegal_address`/`frame_error`/`connection_error`/`not_found`, plus
+  `internal_error` (500) — the base `SidecarError` code, used as the catch-all when
+  an unhandled exception escapes `do_GET`/`do_POST`, and the Go client's fallback
+  for any unrecognised code. → `sidecar/http_api.py`, `sidecar/errors.py`
+
+- **REQ-SD-08** `SIDECAR_LISTEN_ADDR` (default `:8081`) is split into host/port on the
+  **last** `:`; an address with no colon fails validation. An empty host binds all
+  interfaces (Go's `:8081` convention) and the startup line renders it `0.0.0.0:<port>`.
+  → `sidecar/config.py`, `sidecar/__main__.py`
+- **REQ-SD-09** `MOCK_FIXTURE` selects the `MODE=mock` seed snapshot. Unset or empty, it
+  resolves to `docs/phase0/fixtures/live-snapshot-full-sweep.json` **relative to the
+  package's parent directory**, so it works both from a checkout and from the image
+  (which copies the fixtures alongside the package). In `MODE=mock` a fixture path that
+  is not a file fails config validation. → `sidecar/config.py`
+- **REQ-SD-10** The sidecar reads `INVERTER_IP`, `INVERTER_SERIAL` and `INVERTER_PORT`
+  (default `8899`) under the **same names** as the Go manager, so both processes read one
+  `.env` (REQ-CF-01). `INVERTER_IP` and `INVERTER_SERIAL` are required only when
+  `MODE=live`; a non-integer `INVERTER_PORT` is a validation error. → `sidecar/config.py`
+- **REQ-SD-11** `parse_duration_or_seconds` mirrors the Go duration grammar for
+  `INVERTER_SOCKET_TIMEOUT`: a bare int/float is seconds, otherwise a Go duration string
+  (`10s`, `1m30s`, `500ms`; units `ns|us|µs|ms|s|m|h`, optional leading `-`) is parsed to
+  seconds. Empty takes the default (`10s`); an unparseable string, or a result `<= 0`, is
+  a validation error. → `sidecar/config.py`
+- **REQ-SD-12** Secret redaction mirrors the Go `LogValue()` contract (REQ-CF-03):
+  `INVERTER_SERIAL` is never logged verbatim. `Config.redacted_serial()` renders it as
+  first-two + `****` + last-two (`****` when 4 chars or fewer, empty for empty) and the
+  `MODE=live` startup line logs only that form. → `sidecar/config.py`, `sidecar/__main__.py`
+- **REQ-SD-13** Fail-fast config: every problem is collected and raised **once** as a
+  single `ConfigError` (mirroring the Go `errors.Join` style of REQ-CF-02), which
+  `__main__` logs before exiting `1`. `MODE` is required and must be exactly `mock` or
+  `live`. → `sidecar/config.py`, `sidecar/__main__.py`
+- **REQ-SD-14** `SidecarHTTPServer` extends `ThreadingHTTPServer` with
+  `daemon_threads = True` and carries the transport and mode for its handlers, so
+  `/health` and register calls are accepted concurrently and no worker thread can block
+  process shutdown. The transport's own global lock still guarantees exactly one Modbus
+  frame in flight (REQ-SD-05). → `sidecar/http_api.py`
 
 > Note: the Go **client** (`internal/sidecarclient`) that consumes this contract,
-> and wiring `/health` into `/readyz`, are a later phase (see `REQ-LC-*`).
+> and wiring `/health` into `/readyz`, are covered by `REQ-LC-09`/`REQ-LC-11`.
 
 ## Register map / decode (`internal/inverter`, `02-register-map.md`)
 
-- TODO **REQ-RM-\***: decode/encode per `docs/phase0/findings.md` (widths, word
-  order, sign conventions, work-mode bitfield). → `inverter/*`
+`internal/inverter` owns **all** register semantics; the sidecar is a dumb transport
+(REQ-SD-02). Every rule below traces to a probe-confirmed row in
+[`docs/phase0/findings.md`](../phase0/findings.md) and is modelled for Go in
+[`02-register-map.md`](02-register-map.md). Trust no register findings.md does not
+confirm.
+
+- **REQ-RM-01** Register/address model: every Modbus register is a `uint16` unless a
+  spec row marks it S16/U32/S32. Decoders take a base address plus a raw slice and
+  resolve registers by **absolute** Modbus address, so a multi-block `Snapshot`
+  needs no merging or reordering; a register the snapshot does not cover is
+  `ErrRegisterOutOfRange`. → `inverter/block.go`, `inverter/registers.go`
+- **REQ-RM-02** 32-bit word order is **MSW at the lower address** (big-endian words):
+  `raw = uint32(reg[addr])<<16 | uint32(reg[addr+1])`; S32 reinterprets that `uint32`
+  as `int32` (two's complement). Documentary consensus, not empirically forced — every
+  32-bit total currently reads below 65536, so the high word is always 0 today
+  (findings.md ambiguity #1). → `inverter/block.go` (`u32`, `s32`)
+- **REQ-RM-03** Scale is applied **after** width/sign decode: `÷10` (`div10`), `÷100`
+  (`div100`) or `×1`. Decoded physical values cross the package boundary as `float64`.
+  → `inverter/telemetry.go`
+- **REQ-RM-04** Input-register address constants (fc04) — `RegRTCRead` (33022) through
+  `RegGridExportToday` (33175) — are named once and are exactly the rows the confirmed
+  input table holds. `RegTotalPVPower`, `RegACActivePower`, `RegGridPower`,
+  `RegBatteryPower` and the four lifetime-energy constants name the **MSW** of their
+  32-bit pair. → `inverter/registers.go`, `02-register-map.md` §"Input registers",
+  `docs/phase0/findings.md` §"Confirmed input registers"
+- **REQ-RM-05** Holding-register address constants (fc03/fc06) — `RegRTCSet` (43000),
+  `RegMinSOC` (43011), `RegWorkMode` (43110), `RegChargeDischargeEnable` through
+  `RegMaxDischargeCurrent` (43114–43118), `RegTimedChargeCurrent`/
+  `RegTimedDischargeCurrent` (43141/43142) and slot 1's eight H/M registers
+  (43143–43150) — same provenance. → `inverter/registers.go`,
+  `02-register-map.md` §"Holding registers", `docs/phase0/findings.md`
+  §"Confirmed holding registers"
+- **REQ-RM-06** Grid power is **one S32** at 33130·33131 (`+ = export, − = import`),
+  never two independent U16s. The legacy app's `grid_import`/`grid_export` split and
+  its `≤24000` clamp were a bug: the clamp existed only to hide the S32 high word read
+  as a standalone watt value. → `inverter/telemetry.go` (`Grid.PowerW`),
+  `docs/phase0/findings.md` ambiguity #3
+- **REQ-RM-07** Battery power (33149·33150) and battery current (33134) are read as
+  **magnitudes**; the sign comes from the 33135 direction flag (**0 = charge**,
+  1 = discharge) and is published `+ = charge, − = discharge`. A zero magnitude is
+  returned unsigned so a resting battery never publishes `-0`. Confirmed live in both
+  directions (2026-09-14: +381 W with `33135`=1 while discharging).
+  → `inverter/telemetry.go` (`signedByDirection`),
+  `docs/phase0/findings.md` §"2026-09-14 — battery sign correction"
+- **REQ-RM-08** RTC: the six-register block decodes and encodes as
+  `[y-2000, mo, d, h, mi, s]` at either bank — `RegRTCRead` (33022, input) or
+  `RegRTCSet` (43000, holding) — into a **naive local** datetime, because the inverter
+  carries no timezone register. `Drift(rtc, now)` is positive when the inverter clock
+  runs fast, and `RTCWriteRegisters(t)` expands the block into six address/value pairs
+  so the guarded write loop (REQ-HA-13) compares and writes each register
+  independently. → `inverter/rtc.go`
+- **REQ-RM-09** The 43110 work-mode bitfield (mirrored at input 33132): bit 0 self-use,
+  bit 1 timed ("optimal income"), bit 5 allow-grid-charge (**1 = allow**). Named values
+  `WorkModeTimedOn` = 35 and `WorkModeTimedOff` = 33. `WorkMode.Raw` preserves the
+  original word so `Encode()` overlays only the three known flags and **bits this map
+  does not model survive a round trip**. `WithTimed(on)` returns a copy with **only
+  bit 1** changed — the single mutator the catalogue needs, and how REQ-HA-09's
+  read-modify-write flips 35 ↔ 33 without assuming the whole field. Bits 0 and 5 have
+  no mutator: nothing writes them today, and adding one needs a confirmed use case
+  (the guardrail is that an unprobed work mode is never written).
+  → `inverter/workmode.go`
+- **REQ-RM-10** Current registers encode as `raw = uint16(round(amps * 10))` and decode
+  as `raw / 10`. `EncodeAmps` deliberately does **not** clamp: the 0–60 A Home
+  Assistant range is the separate policy helper `ClampHAChargeAmps`, kept out of the
+  primitive so the encoder stays a pure unit conversion. The inverter itself accepts up
+  to 100.0 A (`43117`/`43118` = 1000); the narrower range is an HA-control decision
+  (findings.md ambiguity #9). → `inverter/controls.go`
+- **REQ-RM-11** Timed-slot layout: three slots at `RegTimedSlotStride` = 10 from slot 1's
+  base, with each slot's H/M windows at the **slot-1 offsets `+2..+9`** — the offsets are
+  derived from the confirmed slot-1 addresses rather than hand-typed, so slots 2 and 3
+  follow the register map. The **leading pair of each slot** (`43151`/`43152`,
+  `43161`/`43162`) is documented **UNCONFIRMED** and is never decoded and never written:
+  charge and discharge currents are global (43141/43142), not per slot. An all-zero H/M
+  window decodes as *unset* (`TimedWindow.IsZero`); an hour above 23 or a minute above 59
+  is a decode error. `TimedSlotWriteRegisters` emits only offsets `+2..+9`, lists a
+  direction whose target window is unset **before** one that is set (so a slot swapping
+  direction clears the old window first and never transits the unprobed both-set state),
+  and within a direction always orders start hour, start minute, end hour, end minute.
+  → `inverter/schedule.go`, `inverter/registers.go`,
+  `docs/phase0/findings.md` §"Stage A (#27)", §"Stage B2 pre-design probe"
+- **REQ-RM-12** Telemetry-bank read split: the live datalogger NAKs any single read wider
+  than ~100 registers with `illegal_address` — a **stricter** bound than the sidecar's
+  125-register wire cap (REQ-SD-07) — so 33022–33175 is read as two blocks of ≤ 100,
+  `{33022, 100}` and `{33122, 54}`, split at `33121|33122`. That boundary straddles
+  neither the 6-word RTC block nor any U32/S32 pair, and `Snapshot` resolves across both
+  blocks (REQ-RM-01), so the two reads need no merging.
+  → `publisher/collect.go`, `docs/phase0/findings.md` ambiguity #10
+- **REQ-RM-13** *(reserved)* Six probe-confirmed holding constants are **named but not
+  yet wired** into decode, publish or any write path: `RegMinSOC` (43011),
+  `RegChargeDischargeEnable` (43114), `RegChargeDischargeDirection` (43115),
+  `RegInstantCurrent` (43116), `RegMaxChargeCurrent` (43117) and
+  `RegMaxDischargeCurrent` (43118). Naming them is deliberate — they are confirmed
+  ground truth — but giving any of them behaviour needs its own requirement.
+  → `inverter/registers.go`
+- **REQ-RM-14** *(deferred scope)* Registers findings.md captures that `internal/inverter`
+  deliberately does **not** model yet: product/model/firmware `33000–33003`, inverter
+  serial as ASCII `33004–33011`, limit/config `33181–33217`, the meter cross-check
+  `33263`, holding `43012–43049` (including the `43024`/`43025` SOC-shaped pair —
+  `43024` acks fc06 but silently ignores it, so treat it read-only), the input-statistic
+  mirrors `43034–43067`, and the protection-threshold table `43090–43122` (ruled out as
+  a schedule in Stage A). This is an explicit **deferred scope**, not an omission: the
+  full sweep reads cleanly and expanding to complete Modbus coverage is intended, but
+  each addition lands with its own `REQ-RM-*` and its own confirmation.
+  → `inverter/registers.go` (scope note),
+  `docs/phase0/findings.md` §"Additional registers captured"
 
 ## MQTT & Home Assistant (`internal/mqtt`, `internal/homeassistant`, `internal/publisher`)
 
@@ -92,9 +237,11 @@ See the write-path sections of
 [`03-mqtt-ha-discovery.md`](03-mqtt-ha-discovery.md).
 
 - **REQ-HA-08** Number amp controls: `set_charge_current` (`43141`) and
-  `set_discharge_current` (`43142`), HA `number`, 0–60 A step 0.1, U16 `÷10` A,
-  written via fc06 behind the READ-BEFORE-WRITE guard.
-  → `internal/homeassistant`, `internal/controls`
+  `set_discharge_current` (`43142`), HA `number`, 0–60 A step 0.1, U16 `÷10` A
+  (REQ-RM-10), written via fc06 behind the READ-BEFORE-WRITE guard. Both discovery
+  payloads carry `mode: "box"` (from `Entity.Mode`), so Home Assistant renders a
+  numeric input box rather than a slider — a 0.1 A step across a 0–60 range is not
+  usefully draggable. → `internal/homeassistant`, `internal/controls`
 - **REQ-HA-09** Optimal-income control (`select.optimal_income`, `Run`/`Stop` —
   see REQ-HA-15): **read-modify-write that flips ONLY bit 1** of `43110`
   (RegWorkMode), preserving all other bits (`33`↔`35` on this unit).
@@ -204,6 +351,24 @@ See the write-path sections of
   discovery schemas drop unknown keys (`extra=vol.REMOVE_EXTRA`) rather than
   rejecting the config. → `homeassistant/discovery.go`, `homeassistant/entities.go`,
   `config.go`, `cmd/serve.go`
+- **REQ-HA-19** `controls.Handler.OnMessage(ctx, topic, payload)` is the **public command
+  entry point** — what the MQTT router, the unit tests and the godog suite all call. It
+  takes the shared API lock so a command never interleaves with a poll on the single
+  sidecar socket (REQ-SC-05), then delegates to `Apply`, which routes on the topic's
+  `<key>` segment and performs the parse, server-side validation (REQ-HA-12) and guarded
+  write (REQ-HA-10). `Apply` remains callable directly for a caller that already holds
+  the lock. → `controls/handler.go`, `internal/mqtt`, `cmd/serve.go`
+- **REQ-HA-20** Publisher seams, so the publish path is one code path in every mode:
+  `publisher.Discard` is a no-op `Publisher` used by the no-broker (`mock`) path, so the
+  pipeline runs the **identical** build-and-publish step and the status page still
+  receives the built document (REQ-LC-12) instead of the code branching around the
+  publisher; `publisher.WithNow` injects the clock the Service reads, so `serve.go` shares
+  one clock across the scheduler, the RTC sync and `rtc_drift` (REQ-SC-07);
+  `Service.AvailabilityTopic()` exposes the LWT topic so `cmd` sets the Will without
+  rebuilding topic strings (REQ-HA-04); and `publisher.RecordingPublisher` is the
+  concurrency-safe last-message-per-topic fake the unit tests and the acceptance suite
+  assert MQTT output against without a broker (REQ-TS-03).
+  → `publisher/publisher.go`, `publisher/recording.go`, `cmd/serve.go`
 
 ## Scheduling (`internal/scheduler`, `04-polling-scheduling.md`)
 
@@ -231,13 +396,39 @@ health-driven readiness.
   `RTC_SYNC_ENABLED` and `|Drift| > RTC_DRIFT_THRESHOLD`, run the guarded
   `43000–43005` write under `apiMu` (no second goroutine); self-limiting, disabled
   when `CONTROLS_ENABLED=false`. → `scheduler/*`, `internal/controls`
-- **REQ-SC-07** Injectable `Now`/`After` for deterministic `testing/synctest` tests;
-  the scheduler and controls handler share one clock. → `scheduler/*`
+- **REQ-SC-07** Two injectable clock seams, each with a distinct job. `Now` supplies the
+  current time for **RTC drift** (`Drift(tel.Time, now())`) and boost planning, and is
+  shared by the scheduler, the controls handler and the publisher so one fake clock covers
+  all three. `After` supplies **retry backoff waits only** (REQ-SC-02). The **poll cadence
+  is a `time.NewTicker`**, not a seam — so a poll that runs long does not push the schedule
+  out, the next tick arrives on the original cadence. Both seams default to `time.Now` /
+  `time.After` and make the loop and the backoff deterministic under `testing/synctest`.
+  → `scheduler/scheduler.go`, `cmd/serve.go`, `controls/handler.go`
+- **REQ-SC-08** Setpoint-freshness gating of the schedule reconcile. `setpointFreshness`
+  records — atomically, zero value meaning *fresh*, so the first poll is never treated as
+  stale — whether the last read decoded setpoints from the inverter or reused the
+  scheduler's last-known cache (REQ-SC-03). `gate` wraps the `scheduler.Reconciler` so a
+  **stale cycle is skipped in full** (logged at debug, reported as "wrote nothing"),
+  exactly like a cycle whose publish failed: slots reused from cache can be a whole poll
+  interval old, and diffing against them would let the manager clear a window it never
+  saw — a boost the owner set from the Solis app between two polls. The next poll that
+  reads setpoints successfully re-asserts the schedule. The same flag dates the setpoints
+  the status page shows (`Reading.SetpointsStale`, REQ-LC-12).
+  → `cmd/freshness.go`, `cmd/serve.go`, `controls/reconcile.go`
+- **REQ-SC-09** `Scheduler.PollNow(ctx)` runs exactly one poll cycle through the **same**
+  `poll` the timed loop uses — same `apiMu`, same retry/cache/publish/health/RTC-sync/
+  reconcile path — so the acceptance suite drives cycles explicitly instead of waiting on
+  a ticker and asserts the real sequence rather than a parallel test-only one.
+  → `scheduler/scheduler.go`, `features/polling.feature`
 
 ## Config (`internal/config`, `05-config.md`)
 
 - **REQ-CF-01** All env vars in `05-config.md` bound with defaults. → `config.go`
-- **REQ-CF-02** Fail-fast validation via `errors.Join`. → `config.go`
+- **REQ-CF-02** Fail-fast validation via `errors.Join`: every problem is collected and
+  reported at once rather than on first failure. Malformed values fail startup rather
+  than silently falling back to the default — a non-integer `INVERTER_PORT`,
+  `POLL_MAX_RETRIES` or `FAILURE_THRESHOLD` is an aggregated error in its own right,
+  distinct from a parsed-but-out-of-range value. → `config.go`
 - **REQ-CF-03** Secrets (`INVERTER_SERIAL`, `MQTT_PASSWORD`) redacted in
   `String()`/`LogValue()`. → `config.go`
 - **REQ-CF-04** `MODE` (`live`|`mock`): `live` requires inverter identity + MQTT
@@ -261,6 +452,12 @@ health-driven readiness.
   `0` disables the startup wait) bounds the wait for the sidecar's HTTP listener
   described in `REQ-LC-11`. Validated in the same `errors.Join` fail-fast pass and
   logged like the rest of the config. → `config.go`, `.env.dist`, `cmd/serve.go`
+- **REQ-CF-10** `CONTROLS_ENABLED` (bool, default `true`) is parsed and validated in the
+  same `errors.Join` fail-fast pass, so an unparseable value fails startup rather than
+  silently defaulting. It is the **Ruling R1 kill switch** consumed by REQ-HA-13 (command
+  entities omitted from discovery, no command subscription), REQ-HA-17 (no schedule
+  reconcile) and REQ-SC-06 (no RTC auto-sync) — with it false the manager is fully
+  read-only. → `config.go`, `.env.dist`, `05-config.md`
 
 ## Lifecycle & health (`internal/server`, `cmd`, `main.go`, `06-lifecycle-health.md`)
 
@@ -305,13 +502,69 @@ health-driven readiness.
   from their last successful read. The page auto-refreshes at the poll interval,
   whose 5 s floor `POLL_INTERVAL` validation (`REQ-SC-01`) already enforces; a zero
   interval emits no refresh tag. → `internal/server`, `cmd/serve.go`, `cmd/state.go`
+- **REQ-LC-13** `Server.SetReady(bool)` is a deliberate **test/godog seam**: it flips the
+  readiness flag directly, bypassing the consecutive-failure counter (setting ready also
+  resets that counter), so a scenario can assert a `/readyz` transition without driving
+  whole poll cycles. Production readiness always flows through `MarkSuccess`/`MarkFailure`
+  (REQ-LC-09) — nothing in `cmd` calls `SetReady`.
+  → `internal/server/server.go`, `features/health.feature`
+- **REQ-LC-14** `mqtt.Client.SetOnConnectionUp(fn)` registers or replaces the reconnect
+  hook after construction (production supplies it once via `Options.OnConnectionUp`). It
+  is the seam the client's own tests use to exercise the `fireOnUp`/`drainHook` path —
+  that a hook runs in a tracked goroutine, that `Disconnect` cancels and **waits** for an
+  in-flight hook before the clean disconnect, that a cancelled shutdown context still
+  returns promptly, and that no new hook launches once teardown has begun — without
+  standing up a broker. It is the unit-test half of REQ-LC-10's drain guarantee.
+  → `internal/mqtt/client.go`, `internal/mqtt/client_test.go`
 - **REQ-LC-08** `cmd/main.go` reports errors to stderr and exits non-zero. →
   `cmd/main.go`
 
-## Testing (`internal/mock`, `features`, `07-testing.md`)
+## Testing (`*_test.go`, `features`, `sidecar/tests`, `07-testing.md`)
 
-- TODO **REQ-TS-\***: mock sidecar; unit tests; godog scenarios; `golangci-lint` +
-  `go vet`. Scaffold ships `features/health.feature`. → `*_test.go`, `features/*`
+See [`07-testing.md`](07-testing.md) for the authored detail.
+
+- **REQ-TS-01** Go unit/integration suite: 28 `*_test.go` files covering `config`
+  (defaults, validation, redaction), `server` (probes, readiness, status page),
+  `inverter` (decode/encode), `homeassistant` (discovery/state payloads), `publisher`,
+  `controls`, `schedule`, `scheduler`, `mqtt`, `cmd` and `sidecarclient`. `make test`
+  runs them and **excludes** `./features/...`, so the fast loop stays fast.
+  → `*_test.go`, `Makefile`
+- **REQ-TS-02** Decode tests are **fixture-driven** from the Phase 0 live captures in
+  `docs/phase0/fixtures/`, so the ground truth in the tests is the inverter's own words
+  rather than hand-written expectations — the same captures REQ-RM-* traces to.
+  → `inverter/fixture_test.go`, `inverter/telemetry_test.go`, `inverter/writeprobe_test.go`,
+  `docs/phase0/fixtures/`
+- **REQ-TS-03** godog acceptance suite: six feature files / **30 scenarios** —
+  `health` (2), `mqtt_discovery` (4), `mqtt_controls` (6), `polling` (3), `schedule` (2),
+  `schedule_controls` (13) — sharing one `features/steps_test.go`, run by `make test-e2e`.
+  The suite wires the **real** units in-process against Go fakes rather than a live
+  sidecar or broker: `stubReader` implements `publisher.RegisterReader` (zero-filled or
+  seeded register blocks, programmable failures), `fakeHRW` is a programmable, recording
+  `controls.HoldingReadWriter` standing in for the holding-register bank, and
+  `publisher.RecordingPublisher` captures MQTT output (REQ-HA-20). `httptest` serves only
+  the manager's **own** health/status HTTP surface. There is no inverter, no Python
+  sidecar process and no broker in the suite.
+  → `features/*.feature`, `features/steps_test.go`, `publisher/recording.go`
+- **REQ-TS-04** Time is deterministic: the timed loop and the retry backoff run under
+  `testing/synctest` with the injected `Now`/`After` seams (REQ-SC-07), and the acceptance
+  suite drives `PollNow` (REQ-SC-09) with an immediate fake backoff clock to assert
+  retries, the retained cache and readiness transitions without real sleeps.
+  → `scheduler/scheduler_test.go`, `features/steps_test.go`
+- **REQ-TS-05** Go static analysis: `golangci-lint` pinned to `v2.13.2`, installed into
+  `./bin` on first use, configured `version: "2"`, `run.go: "1.27"`, the `standard` linter
+  set and the `gofmt` formatter; `go vet ./...` as its own target. → `.golangci.yml`,
+  `Makefile`
+- **REQ-TS-06** The Makefile is the single source of truth for the Go dev loop —
+  `build`, `vet`, `lint`, `test`, `test-e2e`, `run` — so CI and a developer's laptop run
+  identical commands against identically pinned tools. → `Makefile`
+- **REQ-TS-07** The Python sidecar carries its own suite: `pytest` over
+  `sidecar/tests/test_api.py`, `test_transport.py` and `test_config.py` (env parsing,
+  duration grammar, redaction, aggregated `ConfigError` — REQ-SD-08…13), plus
+  `ruff check` and `ruff format --check` against `sidecar/ruff.toml`. Both tools are pinned in
+  `sidecar/requirements-dev.txt` (`pytest==8.3.4`, `ruff==0.9.2`) and driven by the
+  `sidecar-install` / `sidecar-run` / `sidecar-test` / `sidecar-lint` targets, mirroring
+  REQ-TS-06 for the sidecar. → `sidecar/tests/`, `sidecar/ruff.toml`,
+  `sidecar/requirements-dev.txt`, `Makefile`
 
 ## Deployment (`08-deployment.md`)
 
@@ -338,13 +591,43 @@ reference manifests.
   `RuntimeDefault`; manager `readOnlyRootFilesystem:true`);
   `terminationGracePeriodSeconds: 30` covers the graceful-shutdown drain
   (`REQ-LC-10`). → `08-deployment.md`
-- **REQ-DP-06** CI: PR gate builds **both** images build-only (`push: false`, amd64);
-  release builds them multi-arch (amd64+arm64) via release-please, **also build-only
-  pending owner approval** — the **no-image-publish guardrail** holds until the owner
-  approves. → `.github/workflows/{ci,release}.yml`, `release-please-config.json`,
-  `.release-please-manifest.json`
+- **REQ-DP-06** Image build & publish. The **PR gate** (`ci.yml`, job `docker-build`)
+  builds **both** images build-only — `push: false`, native `linux/amd64`, scoped gha
+  caches — so a broken Dockerfile fails before merge without paying for emulated arm64.
+  A **release-please release** (`release.yml`, job `image`, gated on
+  `release_created == 'true'`) logs in to ghcr with the workflow `GITHUB_TOKEN`
+  (`packages: write`) and **pushes** both images multi-arch
+  (`linux/amd64,linux/arm64`) as `ghcr.io/gsdevme/solis-inverter-manager` and
+  `ghcr.io/gsdevme/solis-inverter-manager-sidecar`, each tagged with the release tag
+  (`vX.Y.Z`) **and** `latest`. Container publishing was **approved by the owner as of
+  `v2.0.0`**; branch pushes and pull requests never publish.
+  → `.github/workflows/{ci,release}.yml`, `release-please-config.json`,
+  `.release-please-manifest.json`, `08-deployment.md`
 - **REQ-DP-07** Kubernetes manifests are **not** carried in this repo; cluster
   deployment is managed via GitOps (Helm/Flux) in a separate infrastructure repo.
   `08-deployment.md` documents the intended manifest shape as reference examples.
 - **REQ-DP-08** Module path `github.com/gsdevme/solis-inverter-manager`, `go 1.27`
   (toolchain `go 1.27.0`). → `go.mod`
+- **REQ-DP-09** Local three-service dev stack: `docker-compose.yml` runs
+  `eclipse-mosquitto:2` (config `deploy/mosquitto/mosquitto.conf` — anonymous, no
+  persistence, **dev only, never a production broker**), the sidecar image and the manager
+  image on one compose network, both application services reading the same `.env`.
+  Compose overrides `SIDECAR_URL=http://sidecar:8081` and `MQTT_BROKER_URL=mqtt://mqtt:1883`
+  over the loopback defaults that suit a bare `go run`, publishes `1883`/`8081`/`8080` to
+  the host, and `depends_on`-orders the manager behind the broker and sidecar. With
+  `.env.dist`'s `MODE=mock` the whole stack runs end to end with no hardware
+  (`cp .env.dist .env && docker compose up`); a live run only needs `MODE=live` plus
+  `INVERTER_IP`/`INVERTER_SERIAL`, since only the sidecar opens the `:8899` socket
+  (REQ-DP-01). → `docker-compose.yml`, `deploy/mosquitto/mosquitto.conf`, `08-deployment.md`
+- **REQ-DP-10** `checks.yml` is the **single reusable quality gate** (`workflow_call`,
+  workflow-level `permissions: {}` with `contents: read` granted per job), called by both
+  the PR pipeline (`ci.yml`) and the release pipeline (`release.yml`), so the same gate
+  that guards a merge also guards a release. Five jobs, mirroring the same lint-vs-test
+  split in each language so a formatting failure is distinguishable from a behavioural
+  one at a glance: `lint` (`make vet` then `make lint`), `test`, `e2e`
+  (REQ-TS-05/01/03), `sidecar-lint` and `sidecar-test` (REQ-TS-07). Every job invokes a
+  Makefile target, so CI and a laptop use identical pinned tool versions; the Python
+  jobs pin `3.12` to match the sidecar's runtime image and ruff's `target-version`, and
+  cache pip on **both** sidecar requirements files (the runtime pin lives in
+  `requirements.txt`, which `requirements-dev.txt` includes).
+  → `.github/workflows/checks.yml`, `Makefile`

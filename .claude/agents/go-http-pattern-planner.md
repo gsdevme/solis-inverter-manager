@@ -70,8 +70,6 @@ so apply the pattern **only to its HTTP server surfaces**:
 - `internal/server` — `/healthz` + `/readyz` (already a `NewServeMux` handler).
 - `cmd/main.go` + `internal/cmd/serve.go` — the entrypoint and the `&http.Server{}`
   wiring / `runServe(ctx)` (already close to `run`, but no `w`/`getenv` injection).
-- `internal/mock` — the `MODE=mock` fake sidecar (real JSON handlers seeded from the
-  Phase 0 fixtures; the closest thing to a Ryer-style server here).
 
 Do **not** try to force the pattern onto the outbound `internal/sidecarclient`
 HTTP *client*, the `internal/mqtt` client, the `internal/scheduler`, or the
