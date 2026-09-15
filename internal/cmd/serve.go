@@ -76,6 +76,30 @@ func boostSelectAttr(slots inverter.TimedSlots) string {
 	return *state
 }
 
+// touWarningApplies reports whether startup should warn that the configured
+// Time-of-Use window will never be asserted (REQ-CF-07). The warning is for an
+// operator who asked for a window and will not get one, so all three conditions
+// matter: TOU_WINDOW must have been set explicitly — the default window is
+// non-empty, so without the provenance flag every read-only run would warn about
+// a window nobody asked for — it must be non-empty, because an explicitly empty
+// value is the documented way to disable ToU assertion outright, and the write
+// path must be off.
+func touWarningApplies(cfg *config.Config) bool {
+	return cfg.TOUWindowSet && cfg.TOUWindow != "" && !cfg.ControlsEnabled
+}
+
+// healthExitError maps the health server goroutine's terminal value onto
+// runServe's exit error. A nil value means the listener stopped cleanly
+// (http.ErrServerClosed), which must exit zero per REQ-LC-08; wrapping it
+// unconditionally would yield a non-nil "health server: %!w(<nil>)" and a
+// spurious non-zero exit.
+func healthExitError(err error) error {
+	if err == nil {
+		return nil
+	}
+	return fmt.Errorf("health server: %w", err)
+}
+
 // sidecarProbeInterval is how often the startup wait re-probes the sidecar's
 // /health endpoint while it is still coming up.
 const sidecarProbeInterval = 500 * time.Millisecond
@@ -104,6 +128,188 @@ func waitForSidecar(ctx context.Context, client *sidecarclient.Client, timeout t
 		return
 	}
 	logger.Info("sidecar serving", "elapsed", time.Since(started))
+}
+
+// registerBus is the serialised register surface one state read needs: the input
+// bank for telemetry and the holding bank for the writable-control setpoints.
+// *controls.Locking satisfies it in production, so a state read inherits the
+// single-socket serialisation; a fake satisfies it in tests without a sidecar.
+type registerBus interface {
+	publisher.RegisterReader
+	controls.HoldingReadWriter
+}
+
+// newStateReader builds the scheduler's StateReader: it reads telemetry and the
+// writable-control setpoints through the serialized bus. Telemetry and setpoints
+// are read in separate frames, so a setpoints-read failure is non-fatal and MUST
+// NOT blank the published control state: on failure we reuse the last-known
+// setpoints from the scheduler's cache (truth over optimism) rather than folding
+// zeros (0 A / OFF) into the state doc, and mark the reading's setpoints stale so
+// the status page dates them and the schedule reconcile skips the cycle. It
+// returns an error only when telemetry itself could not be read, so the scheduler
+// backs off and retries. On the very first poll there is no last-known value, so
+// zero is the acceptable fallback.
+//
+// lastState is a closure rather than the scheduler itself because the scheduler
+// is built after its reader; now is the clock serve shares across the scheduler,
+// the controls handler and the publisher.
+func newStateReader(
+	bus registerBus,
+	lastState func() (inverter.Telemetry, homeassistant.Setpoints, bool),
+	fresh *setpointFreshness,
+	now func() time.Time,
+	logger *slog.Logger,
+) readerFunc {
+	return func(ctx context.Context) (inverter.Telemetry, homeassistant.Setpoints, error) {
+		tel, err := publisher.Collect(ctx, bus)
+		if err != nil {
+			return inverter.Telemetry{}, homeassistant.Setpoints{}, err
+		}
+		_, haSp, _ := lastState()
+		if sp, err := controls.ReadSetpoints(ctx, bus); err != nil {
+			logger.Warn("read setpoints failed; reusing last-known setpoints", "err", err)
+			fresh.markStale()
+		} else {
+			haSp = toHASetpoints(sp, now())
+			fresh.markFresh()
+		}
+		return tel, haSp, nil
+	}
+}
+
+// reconnectPublisher is the publish surface a republish pass needs: everything a
+// broker session forgets when it drops. *publisher.Service satisfies it; taking
+// the interface keeps the republisher testable without a broker.
+type reconnectPublisher interface {
+	PublishDiscovery(ctx context.Context) error
+	PublishDiscoveryRemovals(ctx context.Context) error
+	PublishAvailability(ctx context.Context, online bool) error
+	PublishState(ctx context.Context, tel inverter.Telemetry, sp homeassistant.Setpoints) (homeassistant.Message, error)
+}
+
+// republisher re-asserts everything one broker session owns, in the order Home
+// Assistant needs it (REQ-HA-05, REQ-HA-11): discovery, then the removals that
+// delete entities this version no longer publishes, then availability "online",
+// then the last cached state so entities are not left "unknown" until the next
+// poll, and finally the command-topic subscription.
+//
+// The same pass runs eagerly once after the first connect and from
+// OnConnectionUp on every reconnect, so the ordering is defined in one place.
+// Every step is idempotent and a failing step is logged and never aborts the
+// rest: a republish is best-effort, and the next reconnect or poll retries it.
+type republisher struct {
+	// svc loads the current publisher. It reports nil in the window between the
+	// transport coming up and serve storing the Service, which is the only time
+	// OnConnectionUp can fire without one.
+	svc func() reconnectPublisher
+	// lastState reads the scheduler's last-good cache; have is false before the
+	// first successful poll, and before the scheduler exists at all.
+	lastState func() (inverter.Telemetry, homeassistant.Setpoints, bool)
+	// subscribe re-asserts the command-topic subscription. It is nil when controls
+	// are disabled, because the command entities are then absent from discovery
+	// and there is nothing to subscribe to.
+	subscribe func(ctx context.Context, topic string) error
+	// commandTopic is the wildcard filter subscribe is called with.
+	commandTopic string
+	logger       *slog.Logger
+}
+
+// run performs one republish pass.
+func (r republisher) run(ctx context.Context) {
+	svc := r.svc()
+	if svc == nil {
+		return
+	}
+	if err := svc.PublishDiscovery(ctx); err != nil {
+		r.logger.Warn("republish discovery failed", "err", err)
+	}
+	if err := svc.PublishDiscoveryRemovals(ctx); err != nil {
+		r.logger.Warn("republish discovery removals failed", "err", err)
+	}
+	if err := svc.PublishAvailability(ctx, true); err != nil {
+		r.logger.Warn("republish availability failed", "err", err)
+	}
+	if tel, sp, have := r.lastState(); have {
+		if _, err := svc.PublishState(ctx, tel, sp); err != nil {
+			r.logger.Warn("republish state failed", "err", err)
+		}
+	}
+	if r.subscribe != nil {
+		if err := r.subscribe(ctx, r.commandTopic); err != nil {
+			r.logger.Warn("subscribe command topic failed", "topic", r.commandTopic, "err", err)
+		}
+	}
+}
+
+// shutdownTimeout bounds the final MQTT publishes and disconnect, which run after
+// the run context has already been cancelled and so need a context of their own.
+const shutdownTimeout = 5 * time.Second
+
+// teardown is the single authoritative shutdown path both exit branches funnel
+// through (REQ-LC-10, REQ-HA-04), so teardown happens exactly once in one place.
+// The order is load-bearing: drain the scheduler FIRST, so no in-flight poll or
+// command touches the sidecar client concurrently with the disconnect; then
+// publish the retained "offline"; then Disconnect — which itself drains any
+// in-flight reconnect republish before the clean disconnect that suppresses the
+// Will; and finally stop the health server, which serves probes until the end.
+//
+// It relies on the run context already being cancelled so the scheduler goroutine
+// returns and schedDone closes.
+type teardown struct {
+	// schedDone closes when the scheduler goroutine has returned.
+	schedDone <-chan struct{}
+	// offline publishes the retained "offline" availability. It is nil when no
+	// broker is configured.
+	offline func(ctx context.Context) error
+	// disconnect closes the MQTT session cleanly. It is nil when no broker is
+	// configured.
+	disconnect func(ctx context.Context) error
+	// stopHealth stops the health listener; it owns its own timeout because it
+	// must still run after the MQTT steps have spent theirs.
+	stopHealth func() error
+	logger     *slog.Logger
+}
+
+// run executes the teardown. Step failures are logged, never propagated: the
+// process is already exiting and the exit code belongs to the branch that called
+// this (REQ-LC-08).
+func (t teardown) run() {
+	t.logger.Info("shutting down")
+	<-t.schedDone
+	ctx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
+	defer cancel()
+	if t.offline != nil {
+		if err := t.offline(ctx); err != nil {
+			t.logger.Warn("publish offline failed", "err", err)
+		}
+	}
+	if t.disconnect != nil {
+		if err := t.disconnect(ctx); err != nil {
+			t.logger.Warn("mqtt disconnect failed", "err", err)
+		}
+	}
+	if err := t.stopHealth(); err != nil {
+		t.logger.Warn("health server shutdown failed", "err", err)
+	}
+}
+
+// waitForExit blocks until the manager should stop and returns runServe's exit
+// error. Both exit branches — a health-server listen/serve failure and a
+// cancelled run context (SIGTERM/SIGINT) — run the one shutdown function, so
+// teardown happens exactly once whichever branch fires (REQ-LC-10). The health
+// branch cancels the run context first, because that context is not cancelled on
+// this path and shutdown blocks until the scheduler has drained; it then surfaces
+// the health error as the exit error (REQ-LC-08). The signal branch exits zero.
+func waitForExit(ctx context.Context, healthErr <-chan error, cancel context.CancelFunc, shutdown func()) error {
+	select {
+	case err := <-healthErr:
+		cancel()
+		shutdown()
+		return healthExitError(err)
+	case <-ctx.Done():
+		shutdown()
+		return nil
+	}
 }
 
 func runServe(ctx context.Context) error {
@@ -178,30 +384,12 @@ func runServe(ctx context.Context) error {
 	// the live slots.
 	var fresh setpointFreshness
 
-	// readState is the scheduler's StateReader: it reads telemetry and the
-	// writable-control setpoints through the serialized wrapper. Telemetry and
-	// setpoints are read in separate holding frames, so a setpoints-read failure is
-	// non-fatal and MUST NOT blank the published control state: on failure we reuse
-	// the last-known setpoints from the scheduler's cache (truth over optimism)
-	// rather than folding zeros (0 A / OFF) into the state doc. It returns an error
-	// only when telemetry itself could not be read, so the scheduler backs off and
-	// retries. On the very first poll there is no last-known value, so zero is the
-	// acceptable fallback.
-	readState := func(ctx context.Context) (inverter.Telemetry, homeassistant.Setpoints, error) {
-		tel, err := publisher.Collect(ctx, wrapper)
-		if err != nil {
-			return inverter.Telemetry{}, homeassistant.Setpoints{}, err
-		}
-		_, haSp, _ := sched.LastState()
-		if sp, err := controls.ReadSetpoints(ctx, wrapper); err != nil {
-			logger.Warn("read setpoints failed; reusing last-known setpoints", "err", err)
-			fresh.markStale()
-		} else {
-			haSp = toHASetpoints(sp, now())
-			fresh.markFresh()
-		}
-		return tel, haSp, nil
-	}
+	// readState is the scheduler's StateReader; newStateReader documents the
+	// setpoints-reuse contract it implements. The scheduler is built further down,
+	// so its cache is reached through a closure resolved at call time.
+	readState := newStateReader(wrapper, func() (inverter.Telemetry, homeassistant.Setpoints, bool) {
+		return sched.LastState()
+	}, &fresh, now, logger)
 
 	// statePub fans every freshly read state out to Home Assistant and the status
 	// page; see state.go. Telemetry is logged only without a broker, where the log
@@ -227,40 +415,34 @@ func runServe(ctx context.Context) error {
 	// configured, connect and publish HA discovery + availability eagerly; the same
 	// republish hook re-runs on every reconnect. When it is not, the pipeline still
 	// polls and logs decoded telemetry so the mock run stays observable.
-	var commandTopic string
+	var republish func(ctx context.Context)
 	if cfg.MQTTBrokerURL != "" {
-		commandTopic = haCfg.BaseTopic() + "/+/set"
-		republish := func(ctx context.Context) {
-			svc := svcPtr.Load()
-			if svc == nil {
-				return
-			}
-			if err := svc.PublishDiscovery(ctx); err != nil {
-				logger.Warn("republish discovery failed", "err", err)
-			}
-			if err := svc.PublishDiscoveryRemovals(ctx); err != nil {
-				logger.Warn("republish discovery removals failed", "err", err)
-			}
-			if err := svc.PublishAvailability(ctx, true); err != nil {
-				logger.Warn("republish availability failed", "err", err)
-			}
-			// The scheduler owns the last-good cache; it may not exist yet on the
-			// very first OnConnectionUp (fired during Connect, before sched is built).
-			if sched != nil {
-				if tel, sp, have := sched.LastState(); have {
-					if _, err := svc.PublishState(ctx, tel, sp); err != nil {
-						logger.Warn("republish state failed", "err", err)
-					}
+		rp := republisher{
+			svc: func() reconnectPublisher {
+				// Returned as an explicit nil: a typed-nil *publisher.Service in the
+				// interface would defeat the nil check in run.
+				if svc := svcPtr.Load(); svc != nil {
+					return svc
 				}
-			}
-			// Re-subscribe on every reconnect (idempotent, like discovery) so the
-			// command topic survives a broker restart. Gated by CONTROLS_ENABLED.
-			if cfg.ControlsEnabled {
-				if err := mc.Subscribe(ctx, commandTopic); err != nil {
-					logger.Warn("resubscribe command topic failed", "topic", commandTopic, "err", err)
+				return nil
+			},
+			lastState: func() (inverter.Telemetry, homeassistant.Setpoints, bool) {
+				// The scheduler owns the last-good cache; it may not exist yet on the
+				// very first OnConnectionUp (fired during Connect, before sched is built).
+				if sched == nil {
+					return inverter.Telemetry{}, homeassistant.Setpoints{}, false
 				}
-			}
+				return sched.LastState()
+			},
+			logger: logger,
 		}
+		// The command subscription is gated by CONTROLS_ENABLED; leaving subscribe
+		// nil is how the republish pass learns there is nothing to subscribe to.
+		if cfg.ControlsEnabled {
+			rp.commandTopic = haCfg.BaseTopic() + "/+/set"
+			rp.subscribe = func(ctx context.Context, topic string) error { return mc.Subscribe(ctx, topic) }
+		}
+		republish = rp.run
 
 		mc, err = mqtt.Connect(ctx, mqtt.Options{
 			BrokerURL:         cfg.MQTTBrokerURL,
@@ -328,11 +510,11 @@ func runServe(ctx context.Context) error {
 	if cfg.RTCSyncEnabled && !cfg.ControlsEnabled {
 		logger.Warn("RTC_SYNC_ENABLED is true but CONTROLS_ENABLED is false; RTC auto-sync is disabled because it requires the write path")
 	}
-	if cfg.TOUWindow != "" && !cfg.ControlsEnabled {
+	if touWarningApplies(cfg) {
 		logger.Warn("ToU assertion is disabled because CONTROLS_ENABLED=false; it requires the write path", "tou_window", cfg.TOUWindow)
 	}
 
-	sched = scheduler.New(readerFunc(readState), statePub, status, rtcSyncer, commander, reconciler, scheduler.Config{
+	sched = scheduler.New(readState, statePub, status, rtcSyncer, commander, reconciler, scheduler.Config{
 		PollInterval:      cfg.PollInterval,
 		MaxRetries:        cfg.PollMaxRetries,
 		RTCSyncEnabled:    cfg.RTCSyncEnabled,
@@ -349,24 +531,13 @@ func runServe(ctx context.Context) error {
 		mc.SetOnMessage(sched.ApplyCommand)
 	}
 
-	// Eager publish once after connect, in case the first connection-up fired before
-	// svcPtr was stored. Transient publish errors are logged, not fatal.
+	// Eager republish once after connect: it announces the manager (discovery,
+	// removals, availability, command subscription) and covers the case where the
+	// first connection-up fired before svcPtr was stored. It is the same pass the
+	// reconnect hook runs, so startup and reconnect cannot drift apart. Transient
+	// publish errors are logged, not fatal.
 	if mc != nil {
-		svc := svcPtr.Load()
-		if err := svc.PublishDiscovery(ctx); err != nil {
-			logger.Warn("publish discovery failed", "err", err)
-		}
-		if err := svc.PublishDiscoveryRemovals(ctx); err != nil {
-			logger.Warn("publish discovery removals failed", "err", err)
-		}
-		if err := svc.PublishAvailability(ctx, true); err != nil {
-			logger.Warn("publish availability failed", "err", err)
-		}
-		if cfg.ControlsEnabled {
-			if err := mc.Subscribe(ctx, commandTopic); err != nil {
-				logger.Warn("subscribe command topic failed", "topic", commandTopic, "err", err)
-			}
-		}
+		republish(ctx)
 	}
 
 	schedDone := make(chan struct{})
@@ -375,47 +546,27 @@ func runServe(ctx context.Context) error {
 		sched.Run(ctx)
 	}()
 
-	// shutdown is the single authoritative teardown path; both exit branches below
-	// funnel through it so teardown happens exactly once, in one place. Ordering is
-	// load-bearing: drain the scheduler FIRST (so no in-flight poll/command touches
-	// the client concurrently with Disconnect), then publish a retained "offline",
-	// then Disconnect — which itself drains any in-flight reconnect-republish
-	// goroutine before the clean disconnect that suppresses the Will — and finally
-	// stop the health server. It relies on ctx being cancelled so the scheduler
-	// goroutine returns and schedDone closes; ctx is already cancelled, so the final
-	// publishes use a fresh short-lived context.
-	shutdown := func() {
-		logger.Info("shutting down")
-		<-schedDone
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if mc != nil {
-			if svc := svcPtr.Load(); svc != nil {
-				if err := svc.PublishAvailability(shutdownCtx, false); err != nil {
-					logger.Warn("publish offline failed", "err", err)
-				}
+	// The teardown type documents the ordering both exit branches depend on. The
+	// MQTT steps are left nil without a broker, so a mock run tears down through
+	// the identical path.
+	td := teardown{
+		schedDone:  schedDone,
+		stopHealth: func() error { return shutdownServer(healthSrv) },
+		logger:     logger,
+	}
+	if mc != nil {
+		td.offline = func(ctx context.Context) error {
+			svc := svcPtr.Load()
+			if svc == nil {
+				return nil
 			}
-			if err := mc.Disconnect(shutdownCtx); err != nil {
-				logger.Warn("mqtt disconnect failed", "err", err)
-			}
+			return svc.PublishAvailability(ctx, false)
 		}
-		if err := shutdownServer(healthSrv); err != nil {
-			logger.Warn("health server shutdown failed", "err", err)
-		}
+		td.disconnect = mc.Disconnect
 	}
 
 	logger.Info("manager running")
-	select {
-	case err := <-healthErr:
-		// The health server failed to listen/serve. Cancel so the scheduler drains,
-		// run the one teardown path, then surface the health error as the exit error.
-		cancel()
-		shutdown()
-		return fmt.Errorf("health server: %w", err)
-	case <-ctx.Done():
-		shutdown()
-		return nil
-	}
+	return waitForExit(ctx, healthErr, cancel, td.run)
 }
 
 func shutdownServer(srv *http.Server) error {

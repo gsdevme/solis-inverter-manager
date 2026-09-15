@@ -291,3 +291,40 @@ func TestWaitUntilServingGivesUpWhenTheContextEnds(t *testing.T) {
 		t.Fatalf("err = %v, want it to wrap context.DeadlineExceeded", err)
 	}
 }
+
+// TestWaitUntilServingAcceptsA200WithANonJSONBody pins REQ-LC-11: any 200 ends
+// the startup wait. The probe must not decode the body, so a sidecar answering
+// 200 with plain text still counts as serving.
+func TestWaitUntilServingAcceptsA200WithANonJSONBody(t *testing.T) {
+	var calls atomic.Int32
+	fake := newFakeSidecar(t, func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		w.Header().Set("Content-Type", "text/plain")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("OK"))
+	})
+	client := sidecarclient.New(fake.server.URL)
+
+	if err := client.WaitUntilServing(t.Context(), time.Millisecond); err != nil {
+		t.Fatalf("WaitUntilServing: %v", err)
+	}
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("calls = %d, want 1: the first 200 must end the wait", got)
+	}
+}
+
+// TestHealthStillRejectsANonJSONBody pins the other half of REQ-LC-11's split:
+// loosening the startup probe must not loosen Health, whose decoded
+// InverterReachable feeds /readyz.
+func TestHealthStillRejectsANonJSONBody(t *testing.T) {
+	fake := newFakeSidecar(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("OK"))
+	})
+	client := sidecarclient.New(fake.server.URL)
+
+	if _, err := client.Health(t.Context()); err == nil {
+		t.Fatal("Health() = nil error, want a decode error for a non-JSON body")
+	}
+}
