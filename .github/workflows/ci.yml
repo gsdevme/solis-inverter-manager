@@ -1,9 +1,18 @@
 name: ci
 
-# Pull-request gate: the full Go verification suite (lint/test/e2e) plus a
-# build-only Docker validation (no push) that catches Dockerfile breakage in both
-# images before merge. Image publishing lives in release.yml and is itself
-# build-only pending owner approval (see the guardrail note there).
+# Pull-request gate: the full verification suite via checks.yml — the Go manager
+# (vet/lint/test/e2e) and the Python sidecar (ruff + pytest) — plus a build-only
+# Docker validation that catches Dockerfile breakage in both images before merge.
+#
+# Nothing in this workflow ever publishes. The docker-build job builds the
+# manager and sidecar images with `push: false` on native linux/amd64 only,
+# which is enough Dockerfile-breakage signal without paying for the emulated
+# arm64 leg on every PR.
+#
+# Publishing lives exclusively in release.yml: its `image` job is gated on
+# release-please's `release_created` output and pushes both images multi-arch
+# (linux/amd64,linux/arm64) to ghcr.io, tagged with the release tag and
+# `latest`. Branch pushes and pull requests never publish.
 on:
   pull_request:
     branches: [master]
