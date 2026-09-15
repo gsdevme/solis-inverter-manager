@@ -73,7 +73,7 @@ file configures both processes (`01-sidecar-contract.md` §Config):
 | `INVERTER_IP`, `INVERTER_SERIAL`, `INVERTER_PORT` | both | The sidecar opens the socket; the manager only needs the serial for MQTT topics and the HA device block (`REQ-SD-10`). |
 | `INVERTER_SOCKET_TIMEOUT` | both | The sidecar accepts bare seconds as well as a Go duration (`REQ-SD-11`). |
 | `SIDECAR_LISTEN_ADDR` | sidecar only | Default `:8081`; empty host binds all interfaces (`REQ-SD-08`). The manager's matching knob is `SIDECAR_URL`. |
-| `MOCK_FIXTURE` | sidecar only | `MODE=mock` seed snapshot; defaults to the Phase 0 full sweep (`REQ-SD-09`). |
+| `MOCK_FIXTURE` | sidecar only | `MODE=mock` seed snapshot(s), comma-separated; defaults to the Phase 0 full sweep plus the comprehensive snapshot, which together cover the whole device (`REQ-SD-09`). |
 
 The sidecar validates fail-fast and redacts `INVERTER_SERIAL` in its logs exactly as
 the manager does (`REQ-SD-12`, `REQ-SD-13`). It never reads any `MQTT_*`, `HA_*`,

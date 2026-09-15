@@ -12,15 +12,20 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-# Default seed fixture: the Phase 0 full-sweep capture, resolved relative to the
-# repo root so it works both from a checkout and from the Docker image (which
-# copies docs/phase0/fixtures alongside the sidecar package).
-_DEFAULT_FIXTURE = (
-    Path(__file__).resolve().parent.parent
-    / "docs"
-    / "phase0"
-    / "fixtures"
-    / "live-snapshot-full-sweep.json"
+_FIXTURE_DIR = Path(__file__).resolve().parent.parent / "docs" / "phase0" / "fixtures"
+
+# Default seed: two complementary captures from the same Phase 0 session, resolved
+# relative to the repo root so they work both from a checkout and from the Docker
+# image (which copies docs/phase0/fixtures alongside the sidecar package).
+#
+# The full sweep deliberately skips the ranges the other snapshots already cover,
+# so on its own it leaves holes — the whole battery block (33121-33180) reads zero,
+# which makes a mock run look like a dead inverter. Seeding the comprehensive
+# snapshot over it fills those holes. The two overlap on 22 registers and agree on
+# every one, so the merged device stays internally consistent.
+_DEFAULT_FIXTURES = (
+    _FIXTURE_DIR / "live-snapshot-full-sweep.json",
+    _FIXTURE_DIR / "live-snapshot-comprehensive.json",
 )
 
 _GO_DURATION_RE = re.compile(r"(\d+(?:\.\d+)?)(ns|us|µs|ms|s|m|h)")
@@ -53,7 +58,9 @@ class Config:
     socket_timeout: float  # seconds
     listen_host: str
     listen_port: int
-    mock_fixture: str
+    # One or more seed snapshots, applied in order: a later fixture wins where two
+    # define the same register.
+    mock_fixtures: tuple[str, ...]
 
     def redacted_serial(self) -> str:
         """The datalogger serial masked for logging."""
@@ -151,9 +158,17 @@ def load(env: dict[str, str] | None = None) -> Config:
     except ValueError as e:
         errs.append(str(e))
 
-    mock_fixture = env.get("MOCK_FIXTURE", "").strip() or str(_DEFAULT_FIXTURE)
-    if mode == "mock" and not Path(mock_fixture).is_file():
-        errs.append(f"MOCK_FIXTURE not found: {mock_fixture}")
+    raw_fixtures = env.get("MOCK_FIXTURE", "").strip()
+    if raw_fixtures:
+        mock_fixtures = tuple(p.strip() for p in raw_fixtures.split(",") if p.strip())
+    else:
+        mock_fixtures = tuple(str(p) for p in _DEFAULT_FIXTURES)
+    if mode == "mock":
+        if not mock_fixtures:
+            errs.append("MOCK_FIXTURE must name at least one fixture")
+        for path in mock_fixtures:
+            if not Path(path).is_file():
+                errs.append(f"MOCK_FIXTURE not found: {path}")
 
     if errs:
         raise ConfigError("; ".join(errs))
@@ -166,5 +181,5 @@ def load(env: dict[str, str] | None = None) -> Config:
         socket_timeout=socket_timeout,
         listen_host=listen_host,
         listen_port=listen_port,
-        mock_fixture=mock_fixture,
+        mock_fixtures=mock_fixtures,
     )

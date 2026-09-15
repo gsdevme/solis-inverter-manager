@@ -128,7 +128,7 @@ Env names mirror the Go `internal/config` so both processes read the same `.env`
 | `INVERTER_PORT`           | `8899`               | Solarman V5 TCP port.                                        |
 | `INVERTER_SOCKET_TIMEOUT` | `10s`                | Bare seconds or a Go-style duration (`10`, `10s`, `1m30s`).  |
 | `SIDECAR_LISTEN_ADDR`     | `:8081`              | `host:port`; empty host binds all interfaces.               |
-| `MOCK_FIXTURE`            | full-sweep snapshot  | Seed fixture for `MODE=mock`; default `docs/phase0/fixtures/live-snapshot-full-sweep.json`. |
+| `MOCK_FIXTURE`            | full sweep + comprehensive | Seed fixture(s) for `MODE=mock`, comma-separated and applied in order; default `docs/phase0/fixtures/live-snapshot-full-sweep.json,docs/phase0/fixtures/live-snapshot-comprehensive.json` (the sweep alone leaves the battery block zero). |
 
 Config is fail-fast: every problem is aggregated and reported at once (mirrors the
 Go `errors.Join` style). `MODE=live` requires `INVERTER_IP` + `INVERTER_SERIAL`;

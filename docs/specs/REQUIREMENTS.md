@@ -44,11 +44,17 @@ The thin Python transport sidecar (Phase 2, #19). See
   **last** `:`; an address with no colon fails validation. An empty host binds all
   interfaces (Go's `:8081` convention) and the startup line renders it `0.0.0.0:<port>`.
   → `sidecar/config.py`, `sidecar/__main__.py`
-- **REQ-SD-09** `MOCK_FIXTURE` selects the `MODE=mock` seed snapshot. Unset or empty, it
-  resolves to `docs/phase0/fixtures/live-snapshot-full-sweep.json` **relative to the
+- **REQ-SD-09** `MOCK_FIXTURE` selects the `MODE=mock` seed snapshot(s): one path, or
+  several comma-separated, applied in order so a later fixture wins where two define the
+  same register. Unset or empty, it resolves to `live-snapshot-full-sweep.json` **then**
+  `live-snapshot-comprehensive.json` under `docs/phase0/fixtures/` **relative to the
   package's parent directory**, so it works both from a checkout and from the image
-  (which copies the fixtures alongside the package). In `MODE=mock` a fixture path that
-  is not a file fails config validation. → `sidecar/config.py`
+  (which copies the fixtures alongside the package). Two are needed because the full
+  sweep skips the ranges the other snapshots already cover, leaving the whole battery
+  block (33121–33180) zero — a mock run seeded from it alone looks like a dead inverter.
+  The two captures come from one session and agree on all 22 registers they share, so the
+  merged device is internally consistent. In `MODE=mock` **every** listed path must be a
+  file, or config validation fails. → `sidecar/config.py`, `sidecar/mock.py`
 - **REQ-SD-10** The sidecar reads `INVERTER_IP`, `INVERTER_SERIAL` and `INVERTER_PORT`
   (default `8899`) under the **same names** as the Go manager, so both processes read one
   `.env` (REQ-CF-01). `INVERTER_IP` and `INVERTER_SERIAL` are required only when

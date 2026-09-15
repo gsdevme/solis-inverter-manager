@@ -13,7 +13,7 @@ from __future__ import annotations
 import pytest
 
 from sidecar.config import (
-    _DEFAULT_FIXTURE,
+    _DEFAULT_FIXTURES,
     ConfigError,
     _redact,
     load,
@@ -31,7 +31,7 @@ def test_defaults_for_mock_mode():
     assert cfg.inverter_port == 8899
     assert cfg.socket_timeout == 10.0
     assert (cfg.listen_host, cfg.listen_port) == ("", 8081)
-    assert cfg.mock_fixture == str(_DEFAULT_FIXTURE)
+    assert cfg.mock_fixtures == tuple(str(p) for p in _DEFAULT_FIXTURES)
 
 
 def test_mode_is_required():
@@ -96,7 +96,7 @@ def test_overrides_are_honoured(tmp_path):
     assert cfg.inverter_port == 9999
     assert cfg.socket_timeout == 90.0
     assert (cfg.listen_host, cfg.listen_port) == ("127.0.0.1", 9090)
-    assert cfg.mock_fixture == str(fixture)
+    assert cfg.mock_fixtures == (str(fixture),)
 
 
 def test_invalid_inverter_port():
@@ -119,9 +119,29 @@ def test_socket_timeout_must_be_positive(raw):
     assert "INVERTER_SOCKET_TIMEOUT must be > 0" in str(e.value)
 
 
-def test_default_fixture_resolves_to_the_phase0_full_sweep():
-    assert _DEFAULT_FIXTURE.name == "live-snapshot-full-sweep.json"
-    assert _DEFAULT_FIXTURE.is_file(), "the default MOCK_FIXTURE must ship with the repo"
+def test_default_fixtures_resolve_to_complementary_phase0_captures():
+    names = [p.name for p in _DEFAULT_FIXTURES]
+    assert names == ["live-snapshot-full-sweep.json", "live-snapshot-comprehensive.json"]
+    for path in _DEFAULT_FIXTURES:
+        assert path.is_file(), f"the default MOCK_FIXTURE {path.name} must ship with the repo"
+
+
+def test_mock_fixture_accepts_a_comma_separated_list(tmp_path):
+    a = tmp_path / "a.json"
+    b = tmp_path / "b.json"
+    for f in (a, b):
+        f.write_text("{}")
+    cfg = load({"MODE": "mock", "MOCK_FIXTURE": f"{a}, {b}"})
+    assert cfg.mock_fixtures == (str(a), str(b))
+
+
+def test_every_listed_mock_fixture_is_validated(tmp_path):
+    present = tmp_path / "present.json"
+    present.write_text("{}")
+    missing = tmp_path / "nope.json"
+    with pytest.raises(ConfigError) as e:
+        load({"MODE": "mock", "MOCK_FIXTURE": f"{present},{missing}"})
+    assert f"MOCK_FIXTURE not found: {missing}" in str(e.value)
 
 
 def test_missing_mock_fixture_fails(tmp_path):
@@ -134,7 +154,7 @@ def test_missing_mock_fixture_fails(tmp_path):
 def test_mock_fixture_is_not_validated_in_live_mode(tmp_path):
     missing = str(tmp_path / "nope.json")
     cfg = load({**LIVE_ENV, "MOCK_FIXTURE": missing})
-    assert cfg.mock_fixture == missing
+    assert cfg.mock_fixtures == (missing,)
 
 
 def test_load_falls_back_to_the_process_environment(monkeypatch):
