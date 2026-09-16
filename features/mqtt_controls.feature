@@ -30,7 +30,7 @@ Feature: MQTT writable controls (guarded, flash-sparing)
   Scenario: An out-of-range charge-current command is clamped, not rejected
     Given holding register 43141 currently reads 0
     When a "set_charge_current" command arrives with payload "200"
-    Then holding register 43141 is written once with 600
+    Then holding register 43141 is written once with 625
 
   Scenario: Optimal income Run preserves unrelated work-mode bits
     Given holding register 43110 currently reads 289

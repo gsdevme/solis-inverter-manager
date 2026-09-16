@@ -490,8 +490,8 @@ confirmed addresses — never invent them.
 
 | Key | Name | Component | Range / payloads | Register | Encoding |
 | --- | --- | --- | --- | --- | --- |
-| `set_charge_current` | Timed charge current | `number` | 0–60 A, step 0.1, `mode: box` | `43141` (RegTimedChargeCurrent) | U16, `÷10` A |
-| `set_discharge_current` | Timed discharge current | `number` | 0–60 A, step 0.1, `mode: box` | `43142` (RegTimedDischargeCurrent) | U16, `÷10` A |
+| `set_charge_current` | Timed charge current | `number` | 0–62.5 A, step 0.1, `mode: box` | `43141` (RegTimedChargeCurrent) | U16, `÷10` A |
+| `set_discharge_current` | Timed discharge current | `number` | 0–62.5 A, step 0.1, `mode: box` | `43142` (RegTimedDischargeCurrent) | U16, `÷10` A |
 | `optimal_income` | Optimal income | `select` | `"Run"` / `"Stop"` | `43110` (RegWorkMode) bit 1 | read-modify-write; `33`↔`35` |
 | `boost_select` | **Boost control** | `select` | `Off`, `Charge 15\|30\|45\|60 min`, `Discharge 15\|30\|45\|60 min` | slot 3 H/M `43163–43170` | all eight slot registers pass the guard; the unused direction is asserted empty and is always cleared first (charge block first only when both directions are unset or both are set); within a direction the order is start hour, start minute, end hour, end minute |
 | `rtc_sync` | Sync RTC now | `button` | press (`payload_press: PRESS`; the handler acts on any payload) | `43000–43005` (RegRTCSet) | U16×6 local datetime; `entity_category: diagnostic`; **stateless** — no `state_topic`/`value_template` |
@@ -505,12 +505,13 @@ confirmed addresses — never invent them.
   untouched; only the display name differs.
 - **`mode: "box"` on the two `number` controls.** `Entity.Mode` is emitted as the
   discovery key `mode`, and both amp controls set it to `box`, so Home Assistant renders
-  a numeric input box rather than a slider — a 0.1 A step across a 0–60 A range is not
+  a numeric input box rather than a slider — a 0.1 A step across a 0–62.5 A range is not
   usefully draggable. `mode` is omitted for every non-`number` component.
 
 - **Amp numbers** (REQ-HA-08) write the scaled integer `round(amps, 1) * 10` via
-  fc06, behind the guard. The `0–60 A` range is the deliberate HA clamp — the unit
-  physically accepts up to 100 A (Phase 0 ambiguity #9), but the control is capped.
+  fc06, behind the guard. The `0–62.5 A` range is the RHI-3.6K-48ES-5G datasheet battery charge/discharge rating (62.5 A / 3 kW; the 4.6K/5K/6K models in the same family are rated 100 A / 5 kW, which is why the registers accept 100 A).
+  The registers physically accept up to 100 A (Phase 0 ambiguity #9) because that is
+  the larger models' rating, so the manager caps the control at this model's figure.
 - **Optimal-income select** (REQ-HA-09, REQ-HA-15) is a **read-modify-write that
   flips ONLY bit 1** of `43110`, preserving every other bit: read `43110`,
   set/clear bit 1 per the `Run`/`Stop` option, write back only if the result
@@ -597,7 +598,7 @@ fc06:
 
 - **Amp numbers** are parsed as float. `NaN`, `±Inf`, or unparseable payloads are
   **rejected outright** (logged and dropped, no write). Any successfully-parsed
-  **finite** float is **clamped to the 0–60 A** control range (`ClampHAChargeAmps`)
+  **finite** float is **clamped to the 0–62.5 A** control range (`ClampHAChargeAmps`)
   and then written under the read-before-write guard — **no numeric value is ever
   rejected for being out of range; only a value that fails to parse is rejected**
   (Ruling R6, matching the controls action `EncodeAmps(ClampHAChargeAmps(parse))`).

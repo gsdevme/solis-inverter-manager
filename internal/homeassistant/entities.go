@@ -203,8 +203,8 @@ func Entities() []Entity {
 		// Writable controls, five in all. Gated behind Config.ControlsEnabled in
 		// BuildDiscovery; always present in this catalogue so the state round-trip
 		// stays exhaustive.
-		{Component: Number, Key: "set_charge_current", Name: "Timed charge current", Command: true, Min: 0, Max: 60, Step: 0.1, Mode: "box", Unit: "A"},
-		{Component: Number, Key: "set_discharge_current", Name: "Timed discharge current", Command: true, Min: 0, Max: 60, Step: 0.1, Mode: "box", Unit: "A"},
+		{Component: Number, Key: "set_charge_current", Name: "Timed charge current", Command: true, Min: 0, Max: 62.5, Step: 0.1, Mode: "box", Unit: "A"},
+		{Component: Number, Key: "set_discharge_current", Name: "Timed discharge current", Command: true, Min: 0, Max: 62.5, Step: 0.1, Mode: "box", Unit: "A"},
 		{Component: Select, Key: "optimal_income", Name: "Optimal income", Command: true, Options: []string{"Run", "Stop"}},
 		{Component: Select, Key: "boost_select", Name: "Boost control", Command: true, Options: schedule.BoostOptions()},
 		{Component: Button, Key: "rtc_sync", Name: "Sync RTC now", Command: true, PayloadPress: "PRESS", Category: "diagnostic"},

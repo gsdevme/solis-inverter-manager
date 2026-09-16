@@ -9,6 +9,7 @@ func TestAmpsRoundTrip(t *testing.T) {
 	}{
 		{35.0, 350},
 		{60.0, 600},
+		{62.5, 625},
 		{45.0, 450},
 		{0.0, 0},
 		{3.5, 35},
@@ -40,7 +41,8 @@ func TestClampHAChargeAmps(t *testing.T) {
 		{0, 0},
 		{35, 35},
 		{60, 60},
-		{75, 60},
+		{62.5, 62.5},
+		{75, 62.5},
 	}
 	for _, tc := range tests {
 		if got := ClampHAChargeAmps(tc.in); got != tc.want {

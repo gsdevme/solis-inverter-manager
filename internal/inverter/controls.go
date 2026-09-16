@@ -3,11 +3,13 @@ package inverter
 import "math"
 
 // haChargeAmpsMin and haChargeAmpsMax bound the Home Assistant charge/discharge
-// current control. The inverter itself accepts up to 100.0 A (43117/43118 =
-// 1000); the HA range is deliberately clamped to 0–60 A per the rebuild plan.
+// current control at 0–62.5 A, the RHI-3.6K-48ES-5G datasheet battery
+// charge/discharge rating. The registers themselves accept up to 100.0 A
+// (43117/43118 = 1000) because that is the rating of the larger 4.6K/5K/6K
+// models in the same family, so the manager clamps to this model's figure.
 const (
 	haChargeAmpsMin = 0.0
-	haChargeAmpsMax = 60.0
+	haChargeAmpsMax = 62.5
 )
 
 // DecodeAmps decodes a ÷10 A current register (e.g. 43141/43142) to amps.
@@ -23,8 +25,9 @@ func EncodeAmps(amps float64) uint16 {
 }
 
 // ClampHAChargeAmps clamps a requested current to the Home Assistant control
-// range (0–60 A). It is a policy helper for the controls/HA layer and is kept out
-// of the EncodeAmps primitive so the encoder stays a pure unit conversion.
+// range (0–62.5 A, this model's datasheet rating). It is a policy helper for the
+// controls/HA layer and is kept out of the EncodeAmps primitive so the encoder
+// stays a pure unit conversion.
 func ClampHAChargeAmps(amps float64) float64 {
 	return min(max(amps, haChargeAmpsMin), haChargeAmpsMax)
 }
