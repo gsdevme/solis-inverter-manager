@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.6.0](https://github.com/gsdevme/solis-inverter-manager/compare/v2.5.0...v2.6.0) (2026-09-16)
+
+
+### Features
+
+* **controls:** raise HA charge/discharge amps range to 62.5 A ([27c50f0](https://github.com/gsdevme/solis-inverter-manager/commit/27c50f0a8180370691a3d0ad9b40ba100cad4fd1))
+
 ## [2.5.0](https://github.com/gsdevme/solis-inverter-manager/compare/v2.4.0...v2.5.0) (2026-09-15)
 
 
