@@ -145,10 +145,11 @@ confirm.
   (the guardrail is that an unprobed work mode is never written).
   → `inverter/workmode.go`
 - **REQ-RM-10** Current registers encode as `raw = uint16(round(amps * 10))` and decode
-  as `raw / 10`. `EncodeAmps` deliberately does **not** clamp: the 0–60 A Home
+  as `raw / 10`. `EncodeAmps` deliberately does **not** clamp: the 0–62.5 A Home
   Assistant range is the separate policy helper `ClampHAChargeAmps`, kept out of the
   primitive so the encoder stays a pure unit conversion. The inverter itself accepts up
-  to 100.0 A (`43117`/`43118` = 1000); the narrower range is an HA-control decision
+  to 100.0 A (`43117`/`43118` = 1000) because that is the 4.6K/5K/6K rating; the
+  narrower range is the RHI-3.6K-48ES-5G datasheet battery charge/discharge rating (62.5 A / 3 kW; the 4.6K/5K/6K models in the same family are rated 100 A / 5 kW, which is why the registers accept 100 A)
   (findings.md ambiguity #9). → `inverter/controls.go`
 - **REQ-RM-11** Timed-slot layout: three slots at `RegTimedSlotStride` = 10 from slot 1's
   base, with each slot's H/M windows at the **slot-1 offsets `+2..+9`** — the offsets are
@@ -295,10 +296,10 @@ See the write-path sections of
 [`03-mqtt-ha-discovery.md`](03-mqtt-ha-discovery.md).
 
 - **REQ-HA-08** Number amp controls: `set_charge_current` (`43141`) and
-  `set_discharge_current` (`43142`), HA `number`, 0–60 A step 0.1, U16 `÷10` A
+  `set_discharge_current` (`43142`), HA `number`, 0–62.5 A step 0.1, U16 `÷10` A
   (REQ-RM-10), written via fc06 behind the READ-BEFORE-WRITE guard. Both discovery
   payloads carry `mode: "box"` (from `Entity.Mode`), so Home Assistant renders a
-  numeric input box rather than a slider — a 0.1 A step across a 0–60 range is not
+  numeric input box rather than a slider — a 0.1 A step across a 0–62.5 range is not
   usefully draggable. → `internal/homeassistant`, `internal/controls`
 - **REQ-HA-09** Optimal-income control (`select.optimal_income`, `Run`/`Stop` —
   see REQ-HA-15): **read-modify-write that flips ONLY bit 1** of `43110`
@@ -313,7 +314,7 @@ See the write-path sections of
   availability/state republish). → `internal/mqtt`, `internal/cmd`
 - **REQ-HA-12** Server-side validation (Ruling R6): amps parsed as float — `NaN`,
   `±Inf`, or unparseable payloads **rejected outright** (logged and dropped, no
-  write); any successfully-parsed **finite** float is **clamped to 0–60 A**
+  write); any successfully-parsed **finite** float is **clamped to 0–62.5 A** (the model's datasheet rating)
   (`ClampHAChargeAmps`) and written under the guard — **no value is rejected for
   being out of range**, only for failing to parse (matches
   `EncodeAmps(ClampHAChargeAmps(parse))`). A select accepts only its own options

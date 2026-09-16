@@ -113,7 +113,7 @@ func TestInvalidAmpsRejected(t *testing.T) {
 }
 
 // TestOutOfRangeAmpsClamped: a finite-but-out-of-range value is CLAMPED to the
-// HA maximum (60 A -> 600), not rejected (Ruling R6). DoD 6.
+// HA maximum (62.5 A -> 625), not rejected (Ruling R6). DoD 6.
 func TestOutOfRangeAmpsClamped(t *testing.T) {
 	f := newFakeRW()
 	f.regs[43141] = 0
@@ -122,8 +122,8 @@ func TestOutOfRangeAmpsClamped(t *testing.T) {
 
 	h.OnMessage(context.Background(), "solis/cmd/set_charge_current/set", []byte("200"))
 
-	if len(f.writeCalls) != 1 || f.writeCalls[0] != (writeCall{43141, 600}) {
-		t.Errorf("writeCalls = %v, want one clamped write of 43141=600", f.writeCalls)
+	if len(f.writeCalls) != 1 || f.writeCalls[0] != (writeCall{43141, 625}) {
+		t.Errorf("writeCalls = %v, want one clamped write of 43141=625", f.writeCalls)
 	}
 	if c.n != 1 {
 		t.Errorf("refresh fired %d times, want 1 (clamp is a routed write)", c.n)

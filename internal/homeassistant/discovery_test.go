@@ -351,7 +351,7 @@ func TestDiscoveryControlsEnabled(t *testing.T) {
 	if num["command_topic"] != "~/set_charge_current/set" {
 		t.Errorf("command_topic = %v", num["command_topic"])
 	}
-	if num["min"] != float64(0) || num["max"] != float64(60) || num["step"] != 0.1 {
+	if num["min"] != float64(0) || num["max"] != 62.5 || num["step"] != 0.1 {
 		t.Errorf("min/max/step = %v / %v / %v", num["min"], num["max"], num["step"])
 	}
 	if num["mode"] != "box" || num["unit_of_measurement"] != "A" {

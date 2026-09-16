@@ -159,9 +159,27 @@ From `fixtures/write-path-probe.json` (register 43141):
   first empirical answer. Re-verify per-register if new setpoints misbehave.)
 - Original value **restored** (340→350, confirmed).
 
-Amps write encoding: `int(round(amps, 1) * 10)`, fc06. Inverter accepts up to
-100.0 A (`43117/43118` = 1000); the HA control range is deliberately clamped to
-**0–60 A** per the plan (revisit if a wider range is wanted).
+Amps write encoding: `int(round(amps, 1) * 10)`, fc06. The registers accept up to
+100.0 A (`43117/43118` = 1000); the HA control range is clamped to **0–62.5 A**, the
+datasheet battery charge/discharge rating for this model.
+
+### Datasheet battery ratings
+
+Solis datasheet *RHI-(3-6)K-48ES-5G* (AUS V1.8, 2021-10,
+<https://solisinverters.au/uploads/files/202406/Solis_datasheet_RHI-(3-6)K-48ES-5G_AUS_V1.8_2021_10.pdf>):
+
+| Model | Max battery charge/discharge current | Max battery charge/discharge power |
+| --- | --- | --- |
+| RHI-3K-48ES-5G | 62.5 A | 3 kW |
+| **RHI-3.6K-48ES-5G** (this unit) | **62.5 A** | **3 kW** |
+| RHI-4.6K-48ES-5G | 100 A | 5 kW |
+| RHI-5K-48ES-5G | 100 A | 5 kW |
+| RHI-6K-48ES-5G | 100 A | 5 kW |
+
+The 100 A the registers accept is the 4.6K+ figure — the register map is shared
+across the family — so the manager clamps to this model's 62.5 A. Note the 3 kW
+power limit usually binds first: at the ~51.8 V pack voltage seen live that is
+≈ 58 A, so 62.5 A is only reachable near the 48 V end of the range.
 
 ## RTC drift (confirmed)
 
@@ -189,7 +207,7 @@ Amps write encoding: `int(round(amps, 1) * 10)`, fc06. Inverter accepts up to
 | 6 | Work-mode read-back location | Both 43110 and 33132 (both = 35 live) |
 | 7 | ~120 s setpoint commit/revert | **No revert** for 43141 (persisted 130 s) |
 | 8 | SOH validity (33140) | Reports a real value (97 %) on this unit |
-| 9 | Amps write limit | Unit allows 100 A; HA control clamped 0–60 A per plan |
+| 9 | Amps write limit | Registers allow 100 A (the 4.6K+ rating); HA control clamped 0–62.5 A — the RHI-3.6K datasheet rating (62.5 A / 3 kW) |
 | 10 | Max single-read width | Datalogger NAKs `illegal_address` above ~100 regs (probed: `ReadInput(33022,125)` NAK; `33022+100` OK, `33022+110` NAK). Manager reads the telemetry bank as two blocks of ≤100 (split `33121\|33122`); stricter than the sidecar's 125 wire cap. Both production blocks re-read live 2026-09-15 (`33022+100` and `33122+93`, two identical passes, `fixtures/live-poll-blocks-2026-09-15.json`). The blocks must be issued **sequentially**: run concurrently on the one datalogger socket, `33022+100` timed out with no reply while `33122+93` succeeded; every sequential retry succeeded. The manager already serialises polls, so this constrains ad-hoc probing only |
 | 11 | Timed H/M register writes (43143–43150, slots 2/3) | fc06 accepted, persist ≥130 s, restore confirmed (Stage A probe on 43144, 43164) |
 | 12 | 43024 writability | fc06 **acked but ignored** — read-back unchanged at 0/60/130 s; treat as read-only |

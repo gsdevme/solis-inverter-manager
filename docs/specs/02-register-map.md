@@ -175,8 +175,8 @@ whole field.
   must still be read-back confirmed: **43024** acks fc06 but keeps its old
   value, so an ack alone is not proof the inverter applied a write.
 - **Amps encoding:** `raw = uint16(round(amps * 10))`; decode is `raw / 10.0`.
-  The inverter accepts up to 100.0 A (`43117/43118` = 1000); the HA control range
-  is deliberately clamped to **0–60 A** per the plan.
+  The registers accept up to 100.0 A (`43117/43118` = 1000) — the 4.6K/5K/6K rating —
+  so the HA control range is clamped to **0–62.5 A**, the RHI-3.6K-48ES-5G datasheet battery charge/discharge rating (62.5 A / 3 kW; the 4.6K/5K/6K models in the same family are rated 100 A / 5 kW, which is why the registers accept 100 A).
 - **RTC set:** write the 6-register block `43000–43005` as `[y-2000, mo, d, h, mi, s]`.
   Naive local datetime, **no timezone register**. Drift is real (≈ +205 s observed)
   and only corrects via a write; an RTC-drift sensor + optional periodic auto-sync
