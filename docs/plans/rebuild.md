@@ -92,6 +92,10 @@ Exit criteria for each phase are on its GitHub issue.
 
 Post-rebuild, additive feature work continues under further issues — Tariff &
 Boost: #27 done; #28 B1 done, B2 done (live smoke passed 2026-09-14).
+Backflow Power (grid export limit, PR #48): withdrawn 2026-10-31 before any
+register was promoted — it is an export cap, not the small grid bias the owner
+wanted; see `docs/phase0/findings.md` "Backflow power / export limit
+(2026-10-31)". The read-only `probe` workbench from that PR shipped.
 
 ## Config (env var catalog)
 
