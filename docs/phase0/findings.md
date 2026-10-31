@@ -431,3 +431,31 @@ set on this unit. See ambiguity #15.
 Bit 0 of `33145` and bits 1, 2, 5–7 of `33146` are reserved. The raw words are
 published as sensors beside the per-bit binary sensors, so a real fault can be
 reconciled against the vendor table even if a bit is mislabelled here.
+
+## Backflow power / export limit (2026-10-31)
+
+The owner wanted to bias the self-use balancing setpoint a few tens of watts
+(10–50 W) into export, so small grid imports stop showing up. The candidate was
+the LCD setting **Advanced Settings → 0010 → Export Power Set → Backflow
+Power**, which external sources map to holding `43073` (switch word) and `43074`
+(watts), with input `33247` as a mirror.
+
+Baseline read at **2026-10-31T09:01:04Z** with `probe` over the live sidecar,
+inverter in Self Use (`battery_soc` 87, `grid_power` −57 W):
+
+```
+43073  raw 0   (bits 0000000000000000)
+43074  raw 0
+33247  raw 0   (input)
+43110  raw 35  (0000000000100011: self_use, timed, grid_charge)
+```
+
+**No LCD change was made and nothing was written**, so `43073`/`43074`/`33247`
+remain **UNVERIFIED** and are not modelled anywhere in the manager.
+
+Conclusion: Backflow Power is the **export power limit** — a cap on the watts
+allowed out to the grid while Export Power Set is on, with PV curtailed above
+it. It cannot bias the self-use setpoint into export to suppress small imports,
+so the Backflow Power Home Assistant control proposed in PR #48 was withdrawn
+before any register was promoted. A 10–50 W meter bias would need a different,
+currently unknown register; do not model one from forum sources.

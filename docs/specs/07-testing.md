@@ -13,7 +13,7 @@ Nothing in any suite needs an inverter, a datalogger, an MQTT broker or a networ
 
 ## Unit tests (`REQ-TS-01`)
 
-31 `*_test.go` files, excluded from `./features/...` by `make test` so the fast loop
+32 `*_test.go` files, excluded from `./features/...` by `make test` so the fast loop
 stays fast:
 
 | Package | Files | Coverage |
@@ -21,7 +21,7 @@ stays fast:
 | `internal/inverter` | 10 | Register decode/encode: block addressing, RTC, work-mode bitfield, amps, timed slots, live fixtures, the write probe, the BMS fault bitfields, the status label table |
 | `internal/controls` | 6 | The read-before-write guard, command routing/validation, locking, the schedule reconcile, setpoint reads, the fake holding bank |
 | `internal/homeassistant` | 3 | Discovery payload shape, the entity catalogue, the state document |
-| `internal/cmd` | 3 | Setpoint freshness gating, the built state document, the serve seams: the reconnect republish order and re-subscribe (`REQ-HA-05`/`REQ-HA-11`), the single teardown path and its two exit branches (`REQ-LC-10`), the sidecar startup wait (`REQ-LC-11`), the setpoints-reuse state reader (`REQ-SC-03`) |
+| `internal/cmd` | 4 | Setpoint freshness gating, the read-only register probe (chunking, decode frames, fixture capture), the built state document, the serve seams: the reconnect republish order and re-subscribe (`REQ-HA-05`/`REQ-HA-11`), the single teardown path and its two exit branches (`REQ-LC-10`), the sidecar startup wait (`REQ-LC-11`), the setpoints-reuse state reader (`REQ-SC-03`) |
 | `internal/publisher` | 2 | Collect (block split + decode), discovery/availability/state publishes |
 | `internal/schedule` | 2 | ToU window parsing/joining, boost planning and option mapping |
 | `internal/config` | 1 | Defaults, `errors.Join` validation, secret redaction |

@@ -1,6 +1,7 @@
 # Requirements
 
 Stable, traceable requirement IDs. Prefix meanings: `SD` sidecar contract/client,
+`PR` the read-only register probe (`11-probe.md`),
 `RM` register map/decode, `HA` MQTT/Home Assistant, `SC` scheduling, `CF` config,
 `LC` lifecycle/health, `TS` testing, `DP` deployment.
 
@@ -606,11 +607,36 @@ health-driven readiness.
 - **REQ-LC-08** `cmd/main.go` reports errors to stderr and exits non-zero. →
   `cmd/main.go`
 
+## Register probe (`internal/cmd/probe.go`, `11-probe.md`)
+
+The read-only register workbench, `solis-inverter-manager probe <verb>`. See
+[`11-probe.md`](11-probe.md).
+
+- **REQ-PR-01** The probe talks to the **sidecar only** (`--sidecar`, then `SIDECAR_URL`,
+  then `http://127.0.0.1:8081`; `--timeout` per request) and **never writes**: it has no
+  write verb, and the adapter that lets it reuse `controls.ReadSetpoints` refuses
+  `WriteHolding`. Writes stay on the guarded command path (REQ-HA-10). Reads wider than
+  100 registers are split into **sequential** chunks of ≤ 100 (findings.md ambiguity #10).
+  → `cmd/probe.go` (`prober.read`, `readOnly`)
+- **REQ-PR-02** `read-input` / `read-holding <addr> [count]` dump raw words (address,
+  `u16`, hex, `s16`); `decode` runs the manager's own poll — `publisher.Collect` and
+  `controls.ReadSetpoints` through `homeassistant.BuildState` — and prints the exact
+  retained state document, so the probe and the manager can never disagree on a decode.
+  → `cmd/probe.go` (`dump`, `decode`)
+- **REQ-PR-03** `capture --out f --input a:n... --holding a:n...` writes the spans in the
+  `docs/phase0/fixtures` shape (`connection`, `captured_at`, `via`, `blocks[{kind, addr,
+  count, regs, by_addr}]`), one block per span however it was chunked on the wire, so a
+  capture is loadable by `inverter/fixture_test.go` and seedable by the sidecar mock
+  unchanged. The file is two-space indented like the committed fixtures and must not
+  already exist: `capture` refuses to overwrite, so a before/after pair keeps both
+  halves. → `cmd/probe.go` (`capture`, `writeNewFile`), `inverter/fixture_test.go`,
+  `sidecar/mock.py`
+
 ## Testing (`*_test.go`, `features`, `sidecar/tests`, `07-testing.md`)
 
 See [`07-testing.md`](07-testing.md) for the authored detail.
 
-- **REQ-TS-01** Go unit/integration suite: 31 `*_test.go` files covering `config`
+- **REQ-TS-01** Go unit/integration suite: 32 `*_test.go` files covering `config`
   (defaults, validation, redaction), `server` (probes, readiness, status page),
   `inverter` (decode/encode), `homeassistant` (discovery/state payloads), `publisher`,
   `controls`, `schedule`, `scheduler`, `mqtt`, `cmd` and `sidecarclient`. `make test`

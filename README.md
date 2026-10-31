@@ -52,6 +52,10 @@ make test-e2e     # godog acceptance suite
 make lint         # golangci-lint (pinned)
 
 MODE=mock HEALTH_ADDR=:8080 go run ./cmd serve
+
+# Read-only register probe over the sidecar, no MQTT/HA (docs/specs/11-probe.md)
+go run ./cmd probe decode
+go run ./cmd probe read-holding 43110 1
 ```
 
 Configuration is a single env catalogue (`MODE`, inverter/sidecar, polling,
