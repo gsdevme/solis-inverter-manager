@@ -1,6 +1,8 @@
 // Package cmd wires the CLI: `serve` runs the poll->sidecar->MQTT manager for the
-// Solis inverter. It is the composition root and owns process lifecycle (signal
-// handling, graceful shutdown). See docs/specs/06-lifecycle-health.md.
+// Solis inverter, and `probe` is the read-only register workbench over the
+// sidecar alone (docs/specs/11-probe.md). It is the composition root and owns
+// process lifecycle (signal handling, graceful shutdown). See
+// docs/specs/06-lifecycle-health.md.
 package cmd
 
 import (

@@ -35,7 +35,8 @@ What ships today:
 
 - **Go manager** — `internal/config` (env catalog, `errors.Join` fail-fast,
   `MODE=mock|live`, slog with secret redaction), `internal/server` (`/healthz`,
-  `/readyz`, HTML status page), `internal/cmd` (composition root, graceful shutdown),
+  `/readyz`, HTML status page), `internal/cmd` (composition root, graceful shutdown,
+  the read-only `probe` register workbench — `docs/specs/11-probe.md`),
   `internal/sidecarclient` (typed HTTP client), `internal/inverter` (the whole
   register map: decode/encode, work-mode bitfield, RTC, timed slots),
   `internal/publisher` (block collect + discovery/availability/state),
@@ -49,7 +50,7 @@ What ships today:
   single lock, reconnect-on-error), REST-ish generic register RPCs, `MODE=mock`
   fixture server, pytest + ruff + Dockerfile; contract in
   `docs/specs/01-sidecar-contract.md`.
-- **Tests** — 31 Go unit/integration test files, a 31-scenario godog acceptance suite
+- **Tests** — 32 Go unit/integration test files, a 31-scenario godog acceptance suite
   (`features/`, six feature files), fixture-driven decode tests off
   `docs/phase0/fixtures/`, and the sidecar's pytest/ruff suite. See
   `docs/specs/07-testing.md`.
@@ -78,6 +79,12 @@ make sidecar-lint     # ruff check + ruff format --check
 gofmt -l .        # must be empty
 go vet ./... && go build ./...
 MODE=mock HEALTH_ADDR=:18080 go run ./cmd serve   # /healthz=200, /readyz=503 (not ready yet)
+
+# Read-only register probe over the sidecar (no MQTT/HA) — docs/specs/11-probe.md,
+# skill .claude/skills/inverter-probe. Never writes.
+go run ./cmd probe decode                        # one real poll, printed as the HA state doc
+go run ./cmd probe read-holding 43110 1          # raw words; a before/after pair correlates an LCD change
+go run ./cmd probe capture --out f.json --holding 43110:1 --input 33139:1
 ```
 
 ## Local run modes (MODE=live|mock)
